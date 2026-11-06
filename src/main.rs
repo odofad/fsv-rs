@@ -149,17 +149,16 @@ fn spawn_boxes(
     for geom in boxes {
         let mut color = color_for_kind(&geom.kind);
 
-        // Bases slightly darker so children stand out
         if geom.is_base {
             let [r, g, b, a] = color.to_srgba().to_f32_array();
-            color = Color::srgba(r * 0.6, g * 0.6, b * 0.6, a);
+            color = Color::srgba(r * 0.55, g * 0.55, b * 0.55, a);
         }
 
         commands.spawn((
             Mesh3d(cube.clone()),
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: color,
-                perceptual_roughness: 0.6,
+                perceptual_roughness: 0.55,
                 ..default()
             })),
             Transform {
@@ -167,8 +166,32 @@ fn spawn_boxes(
                 scale: Vec3::new(geom.width.max(0.01), geom.height.max(0.01), geom.depth.max(0.01)),
                 ..default()
             },
-            Pickable { path: geom.path },
+            Pickable { path: geom.path.clone() },
         ));
+
+        // Simple label above the block (only for non-tiny ones)
+        if geom.width > 0.4 && geom.depth > 0.4 && !geom.name.is_empty() {
+            let label = if geom.name.len() > 16 {
+                format!("{}...", &geom.name[..13])
+            } else {
+                geom.name.clone()
+            };
+
+            commands.spawn((
+                Text2d::new(label),
+                TextFont {
+                    font_size: 24.0,
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+                Transform {
+                    translation: Vec3::new(geom.x, geom.z + geom.height * 0.6 + 0.15, geom.y),
+                    rotation: Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+                    scale: Vec3::splat(0.015),
+                    ..default()
+                },
+            ));
+        }
     }
 }
 
@@ -261,11 +284,15 @@ fn rebuild_layout(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     existing: Query<Entity, With<Pickable>>,
+    labels: Query<Entity, With<Text2d>>,
 ) {
     if !state.is_changed() {
         return;
     }
     for e in &existing {
+        commands.entity(e).despawn();
+    }
+    for e in &labels {
         commands.entity(e).despawn();
     }
     spawn_boxes(&mut commands, &state, &mut meshes, &mut materials);
