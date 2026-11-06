@@ -52,31 +52,38 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
     layout: Res<Layout>,
 ) {
-    // Camera
-    commands.spawn((Camera3d::default(), Transform::from_xyz(0.0, 8.0, 12.0).looking_at(Vec3::ZERO, Vec3::Y)));
+    // Camera looking at the origin from a sensible distance
+    commands.spawn((
+        Camera3d::default(),
+        Transform::from_xyz(0.0, 12.0, 18.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
 
     // Light
-    commands.spawn(DirectionalLight {
-        illuminance: 10_000.0,
+    commands.spawn((DirectionalLight {
+        illuminance: 15_000.0,
         ..default()
-    });
+    }, Transform::from_xyz(4.0, 8.0, 4.0)));
 
     let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
 
     for geom in &layout.0 {
+        let _ = &geom.name; // silence unused warning for now
         let color = match geom.kind {
             node::NodeType::Directory => Color::srgb(0.2, 0.5, 0.9),
-            node::NodeType::File => Color::srgb(0.7, 0.7, 0.3),
+            node::NodeType::File => Color::srgb(0.8, 0.7, 0.2),
             node::NodeType::Symlink => Color::srgb(0.9, 0.4, 0.7),
             node::NodeType::Other => Color::srgb(0.5, 0.5, 0.5),
         };
 
         commands.spawn((
             Mesh3d(cube.clone()),
-            MeshMaterial3d(materials.add(color)),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: color,
+                ..default()
+            })),
             Transform {
                 translation: Vec3::new(geom.x, geom.z, geom.y),
-                scale: Vec3::new(geom.width, geom.height, geom.depth),
+                scale: Vec3::new(geom.width.max(0.01), geom.height.max(0.01), geom.depth.max(0.01)),
                 ..default()
             },
         ));
