@@ -2,6 +2,7 @@ mod node;
 mod scan;
 mod layout;
 
+use std::f32::consts::PI;
 use std::path::{PathBuf, Path};
 use clap::Parser;
 use bevy::input::mouse::MouseScrollUnit;
@@ -39,12 +40,28 @@ struct Pickable {
 #[derive(Component)]
 struct MapPiece;
 
+struct FlyTo {
+    start_focus: Vec3,
+    start_yaw: f32,
+    start_pitch: f32,
+    start_dist: f32,
+    end_focus: Vec3,
+    end_yaw: f32,
+    end_pitch: f32,
+    end_dist: f32,
+    mid_dist: f32,
+    swing: bool,
+    t: f32,
+    duration: f32,
+}
+
 #[derive(Component)]
 struct OrbitCamera {
     yaw: f32,
     pitch: f32,
     distance: f32,
     focus: Vec3,
+    fly: Option<FlyTo>,
 }
 
 fn main() {
@@ -91,12 +108,13 @@ fn setup(
 ) {
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(0.0, 22.0, 26.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(8.0, 26.0, 18.0).looking_at(Vec3::ZERO, Vec3::Y),
         OrbitCamera {
-            yaw: 0.35,
-            pitch: 0.95,
+            yaw: 0.5,
+            pitch: -0.85,
             distance: 32.0,
             focus: Vec3::ZERO,
+            fly: None,
         },
     ));
 
@@ -117,31 +135,32 @@ fn setup(
 }
 
 fn orbit_camera(
+    time: Res<Time>,
     mut cameras: Query<(&mut Transform, &mut OrbitCamera)>,
     buttons: Res<ButtonInput<MouseButton>>,
     mut scroll: EventReader<bevy::input::mouse::MouseWheel>,
     mut motion: EventReader<bevy::input::mouse::MouseMotion>,
     mut egui: EguiContexts,
 ) {
-    if egui.ctx_mut().is_pointer_over_area() {
-        return;
-    }
-
     let Ok((mut transform, mut orbit)) = cameras.get_single_mut() else { return; };
+
+    let over_ui = egui.ctx_mut().is_pointer_over_area();
 
     let mut delta = Vec2::ZERO;
     for ev in motion.read() {
         delta += ev.delta;
     }
 
-    // Middle button orbits. Left click opens a directory.
-    if buttons.pressed(MouseButton::Middle) {
+    let mut manual = false;
+
+    if !over_ui && buttons.pressed(MouseButton::Middle) {
+        manual = true;
         orbit.yaw -= delta.x * 0.005;
-        orbit.pitch = (orbit.pitch - delta.y * 0.005).clamp(-1.2, 1.45);
+        orbit.pitch = (orbit.pitch - delta.y * 0.005).clamp(-1.2, 1.2);
     }
 
-    // Right button slides the view.
-    if buttons.pressed(MouseButton::Right) {
+    if !over_ui && buttons.pressed(MouseButton::Right) {
+        manual = true;
         let right = transform.right();
         let up = transform.up();
         let pan = orbit.distance * 0.0016;
@@ -149,6 +168,10 @@ fn orbit_camera(
     }
 
     for ev in scroll.read() {
+        if over_ui {
+            continue;
+        }
+        manual = true;
         let ticks = match ev.unit {
             MouseScrollUnit::Line => ev.y,
             MouseScrollUnit::Pixel => ev.y / 60.0,
@@ -157,10 +180,110 @@ fn orbit_camera(
         orbit.distance = (orbit.distance - zoom).clamp(1.5, 400.0);
     }
 
+    if manual {
+        orbit.fly = None;
+    } else if orbit.fly.is_some() {
+        step_fly(&mut orbit, time.delta_secs());
+    }
+
     let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, orbit.pitch, 0.0);
     let offset = rot * Vec3::new(0.0, 0.0, orbit.distance);
     transform.translation = orbit.focus + offset;
     transform.look_at(orbit.focus, Vec3::Y);
+}
+
+fn step_fly(orbit: &mut OrbitCamera, dt: f32) {
+    let Some(mut fly) = orbit.fly.take() else { return; };
+    fly.t = (fly.t + dt / fly.duration.max(0.05)).min(1.0);
+    let s = smoothstep(fly.t);
+    orbit.focus = fly.start_focus.lerp(fly.end_focus, s);
+    orbit.yaw = lerp_angle(fly.start_yaw, fly.end_yaw, s);
+    orbit.pitch = lerp_angle(fly.start_pitch, fly.end_pitch, s);
+    orbit.distance = if fly.swing {
+        if fly.t < 0.5 {
+            lerp(fly.start_dist, fly.mid_dist, smoothstep(fly.t * 2.0))
+        } else {
+            lerp(fly.mid_dist, fly.end_dist, smoothstep((fly.t - 0.5) * 2.0))
+        }
+    } else {
+        lerp(fly.start_dist, fly.end_dist, s)
+    };
+    if fly.t < 1.0 {
+        orbit.fly = Some(fly);
+    }
+}
+
+fn begin_fly(orbit: &mut OrbitCamera, translation: Vec3, scale: Vec3, is_dir: bool, fov: f32) {
+    let mut focus = translation + Vec3::new(0.0, scale.y * 0.5, 0.0);
+    if is_dir {
+        focus.y += scale.y * 0.25;
+    }
+
+    let width = scale.x.max(0.05);
+    let depth = scale.z.max(0.05);
+    let height = scale.y.max(0.05);
+    let footprint = (width * depth).sqrt();
+    let mut diameter = std::f32::consts::SQRT_2 * footprint.max(0.5 * width.max(depth));
+    let k = if is_dir {
+        diameter = diameter.max(width.max(depth * 1.5)).max(height * 2.0);
+        1.35
+    } else {
+        2.2
+    };
+    let half = (fov * 0.5).max(0.2);
+    let end_dist = (k * diameter * (0.5 / half.tan())).clamp(1.8, 80.0);
+
+    // Same heading rule as fsv mapv_camera_theta: a bit more side-on
+    // toward the edges of the map, about 50 degrees up.
+    let x_norm = (focus.x / 20.0).clamp(-0.45, 0.45);
+    let theta = (270.0 + 45.0 * x_norm).to_radians();
+    let phi = if is_dir { 50.0_f32 } else { 40.0 };
+    let end_pitch = -phi.to_radians();
+    let end_yaw = theta.cos().atan2(theta.sin());
+
+    let travel = orbit.focus.distance(focus);
+    let duration = (0.55 + travel * 0.06).clamp(0.55, 1.6);
+    let swing = travel > 3.0 * orbit.distance.max(end_dist);
+    let mid_dist = if swing {
+        1.15 * end_dist.max(travel * 0.65)
+    } else {
+        (orbit.distance + end_dist) * 0.5
+    };
+
+    orbit.fly = Some(FlyTo {
+        start_focus: orbit.focus,
+        start_yaw: orbit.yaw,
+        start_pitch: orbit.pitch,
+        start_dist: orbit.distance,
+        end_focus: focus,
+        end_yaw,
+        end_pitch,
+        end_dist,
+        mid_dist,
+        swing,
+        t: 0.0,
+        duration,
+    });
+}
+
+fn smoothstep(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+fn lerp_angle(a: f32, b: f32, t: f32) -> f32 {
+    let mut d = (b - a) % (PI * 2.0);
+    if d > PI {
+        d -= PI * 2.0;
+    }
+    if d < -PI {
+        d += PI * 2.0;
+    }
+    a + d * t
 }
 
 fn spawn_geometry(
@@ -389,7 +512,8 @@ fn color_for_kind(kind: &node::NodeType) -> Color {
 fn click_expand(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
-    cameras: Query<(&Camera, &GlobalTransform)>,
+    cameras: Query<(&Camera, &GlobalTransform, &Projection)>,
+    mut orbits: Query<&mut OrbitCamera>,
     pickables: Query<(&Pickable, &Transform)>,
     mut state: ResMut<AppState>,
     mut egui: EguiContexts,
@@ -404,30 +528,46 @@ fn click_expand(
 
     let Ok(window) = windows.get_single() else { return; };
     let Some(cursor) = window.cursor_position() else { return; };
-    let Ok((camera, cam_transform)) = cameras.get_single() else { return; };
+    let Ok((camera, cam_transform, projection)) = cameras.get_single() else { return; };
 
     let Some(ray) = camera.viewport_to_world(cam_transform, cursor).ok() else { return; };
 
-    let mut best: Option<(f32, PathBuf)> = None;
+    let mut best: Option<(f32, PathBuf, Vec3, Vec3)> = None;
     for (pick, transform) in &pickables {
         let half = transform.scale * 0.5;
         let min = transform.translation - half;
         let max = transform.translation + half;
         if let Some(dist) = ray_aabb(ray.origin, *ray.direction, min, max) {
-            if best.as_ref().map_or(true, |(d, _)| dist < *d) {
-                best = Some((dist, pick.path.clone()));
+            if best.as_ref().map_or(true, |(d, _, _, _)| dist < *d) {
+                best = Some((
+                    dist,
+                    pick.path.clone(),
+                    transform.translation,
+                    transform.scale,
+                ));
             }
         }
     }
 
-    if let Some((_, path)) = best {
-        state.selected = Some(path.clone());
-        if toggle_expanded(&mut state.root, &path) {
-            state.dirty = true;
-        } else {
-            state.dirty = true;
-        }
+    let Some((_, path, translation, scale)) = best else { return; };
+    let is_dir = is_dir_path(&state.root, &path);
+    let fov = match projection {
+        Projection::Perspective(p) => p.fov,
+        Projection::Orthographic(_) => std::f32::consts::FRAC_PI_4,
+    };
+    if let Ok(mut orbit) = orbits.get_single_mut() {
+        begin_fly(&mut orbit, translation, scale, is_dir, fov);
     }
+    state.selected = Some(path.clone());
+    state.dirty = true;
+    toggle_expanded(&mut state.root, &path);
+}
+
+fn is_dir_path(node: &node::Node, path: &Path) -> bool {
+    if node.path == path {
+        return node.is_dir();
+    }
+    node.children.iter().any(|child| is_dir_path(child, path))
 }
 
 fn ray_aabb(origin: Vec3, dir: Vec3, min: Vec3, max: Vec3) -> Option<f32> {
