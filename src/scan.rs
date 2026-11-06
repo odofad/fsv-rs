@@ -33,11 +33,12 @@ pub fn scan(root: &Path) -> Result<Node, std::io::Error> {
         let mut node = Node::new(name, path.clone(), kind);
         node.size = size;
         node.mtime = mtime;
+        // Collapsed by default; root will be expanded later
+        node.expanded = false;
 
         nodes.insert(path, node);
     }
 
-    // Collect parent -> children relationships first (no overlapping borrows)
     let mut children_map: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
     let all_paths: Vec<PathBuf> = nodes.keys().cloned().collect();
 
@@ -52,7 +53,6 @@ pub fn scan(root: &Path) -> Result<Node, std::io::Error> {
         }
     }
 
-    // Build the tree by moving nodes out
     fn build(path: &Path, nodes: &mut HashMap<PathBuf, Node>, children_map: &HashMap<PathBuf, Vec<PathBuf>>) -> Node {
         let mut node = nodes.remove(path).expect("node exists");
         if let Some(child_paths) = children_map.get(path) {
@@ -65,11 +65,9 @@ pub fn scan(root: &Path) -> Result<Node, std::io::Error> {
     }
 
     let mut root_node = build(root, &mut nodes, &children_map);
+    root_node.expanded = true; // root starts expanded
 
-    // Compute subtree sizes first
     compute_subtree_size(&mut root_node);
-
-    // Then sort: dirs first, then by subtree size descending
     sort_children(&mut root_node);
 
     Ok(root_node)
