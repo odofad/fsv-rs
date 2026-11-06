@@ -33,16 +33,16 @@ pub fn mapv_layout(root: &Node) -> Vec<BoxGeom> {
         return boxes;
     }
 
-    let root_w = 14.0;
-    let root_d = 12.0;
+    let root_w = 16.0;
+    let root_d = 14.0;
 
-    layout_recursive(
+    // Flat plane: everything sits at z=0, no stacking of children on parents
+    layout_flat(
         root,
         -root_w / 2.0,
         -root_d / 2.0,
         root_w,
         root_d,
-        0.0,
         root.subtree_size as f32,
         true,
         &mut boxes,
@@ -51,56 +51,57 @@ pub fn mapv_layout(root: &Node) -> Vec<BoxGeom> {
     boxes
 }
 
-fn layout_recursive(
+fn layout_flat(
     node: &Node,
     x: f32,
     y: f32,
     width: f32,
     depth: f32,
-    z: f32,
     parent_total: f32,
     is_root: bool,
     out: &mut Vec<BoxGeom>,
 ) {
-    if width < 0.1 || depth < 0.1 {
+    if width < 0.15 || depth < 0.15 {
         return;
     }
 
     let rel = (node.subtree_size.max(1) as f32 / parent_total.max(1.0)).clamp(0.0, 1.0);
 
     let is_expanded_dir = node.is_dir() && node.expanded && !node.children.is_empty();
-    let is_base = is_root || is_expanded_dir;
 
-    // Very thin bases; individual blocks get real height
-    let height = if is_base {
-        0.04
-    } else {
-        0.4 + rel * 0.5
-    };
+    // Only draw the node itself if it's a leaf or collapsed dir.
+    // Expanded dirs are just the container; we draw their children instead.
+    if !is_expanded_dir || is_root {
+        let height = if is_root {
+            0.05
+        } else {
+            0.35 + rel * 0.4
+        };
 
-    out.push(BoxGeom {
-        x: x + width / 2.0,
-        y: y + depth / 2.0,
-        z: z + height / 2.0,
-        width,
-        depth,
-        height,
-        kind: node.kind.clone(),
-        name: node.name.clone(),
-        path: node.path.clone(),
-        is_base,
-    });
+        out.push(BoxGeom {
+            x: x + width / 2.0,
+            y: y + depth / 2.0,
+            z: height / 2.0, // always on the ground plane
+            width,
+            depth,
+            height,
+            kind: node.kind.clone(),
+            name: node.name.clone(),
+            path: node.path.clone(),
+            is_base: is_root,
+        });
+    }
 
     if !is_expanded_dir {
         return;
     }
 
-    // Cap leaves for readability
+    // Cap leaves
     let mut children: Vec<&Node> = node.children.iter().collect();
     children.sort_by(|a, b| b.subtree_size.cmp(&a.subtree_size));
     let mut visible: Vec<&Node> = Vec::new();
     let mut file_count = 0;
-    const MAX_FILES: usize = 8;
+    const MAX_FILES: usize = 6;
     for c in &children {
         if c.is_dir() {
             visible.push(c);
@@ -111,13 +112,11 @@ fn layout_recursive(
     }
 
     let total = node.subtree_size.max(1) as f32;
-    let gap = 0.12; // bigger gaps
+    let gap = 0.18;
     let inner_x = x + gap;
     let inner_y = y + gap;
-    let inner_w = (width - 2.0 * gap).max(0.15);
-    let inner_d = (depth - 2.0 * gap).max(0.15);
-
-    let child_z = z + height + 0.02; // sit clearly on top
+    let inner_w = (width - 2.0 * gap).max(0.2);
+    let inner_d = (depth - 2.0 * gap).max(0.2);
 
     let mut remaining = visible.as_slice();
     let mut cursor_x = inner_x;
@@ -126,7 +125,7 @@ fn layout_recursive(
     let mut remain_d = inner_d;
     let mut horizontal = remain_w >= remain_d;
 
-    while !remaining.is_empty() && remain_w > 0.1 && remain_d > 0.1 {
+    while !remaining.is_empty() && remain_w > 0.15 && remain_d > 0.15 {
         let side = if horizontal { remain_w } else { remain_d };
         let other = if horizontal { remain_d } else { remain_w };
 
@@ -137,7 +136,7 @@ fn layout_recursive(
         for i in 1..=remaining.len() {
             accum += (remaining[i - 1].subtree_size.max(1) as f32) / total;
             let area = accum * remain_w * remain_d;
-            let row_thick = (area / side).max(0.1);
+            let row_thick = (area / side).max(0.15);
             let aspect = (side / row_thick).max(row_thick / side);
             if aspect < best_aspect {
                 best_aspect = aspect;
@@ -150,22 +149,22 @@ fn layout_recursive(
         let row = &remaining[..best_count];
         let row_frac: f32 = row.iter().map(|c| (c.subtree_size.max(1) as f32) / total).sum();
         let row_area = row_frac * remain_w * remain_d;
-        let thick = (row_area / side).min(other).max(0.12);
+        let thick = (row_area / side).min(other).max(0.2);
 
         let mut along = 0.0f32;
         for child in row {
             let frac = (child.subtree_size.max(1) as f32) / total;
-            let child_len = (frac / row_frac.max(0.0001) * side).max(0.12);
+            let child_len = (frac / row_frac.max(0.0001) * side).max(0.2);
 
-            let usable = (child_len - gap).max(0.1);
+            let usable = (child_len - gap).max(0.15);
 
             let (cx, cy, cw, cd) = if horizontal {
-                (cursor_x + along + gap * 0.5, cursor_y, usable, (thick - gap).max(0.1))
+                (cursor_x + along + gap * 0.5, cursor_y, usable, (thick - gap).max(0.15))
             } else {
-                (cursor_x, cursor_y + along + gap * 0.5, (thick - gap).max(0.1), usable)
+                (cursor_x, cursor_y + along + gap * 0.5, (thick - gap).max(0.15), usable)
             };
 
-            layout_recursive(child, cx, cy, cw, cd, child_z, total, false, out);
+            layout_flat(child, cx, cy, cw, cd, total, false, out);
             along += child_len;
         }
 
