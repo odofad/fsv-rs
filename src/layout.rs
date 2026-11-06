@@ -18,9 +18,8 @@ pub fn mapv_layout(root: &Node) -> Vec<BoxGeom> {
         return boxes;
     }
 
-    // Fixed size root platform so it always fits in view
-    let root_w = 10.0;
-    let root_d = 8.0;
+    let root_w = 12.0;
+    let root_d = 10.0;
 
     layout_recursive(
         root,
@@ -44,11 +43,11 @@ fn layout_recursive(
     z: f32,
     out: &mut Vec<BoxGeom>,
 ) {
-    if width < 0.05 || depth < 0.05 {
+    if width < 0.08 || depth < 0.08 {
         return;
     }
 
-    let height = if node.is_dir() { 0.3 } else { 0.12 };
+    let height = if node.is_dir() { 0.25 } else { 0.1 };
 
     out.push(BoxGeom {
         x: x + width / 2.0,
@@ -65,39 +64,65 @@ fn layout_recursive(
         return;
     }
 
+    // Simple squarified-style row packing
     let total = node.subtree_size.max(1) as f32;
-    let mut cursor_x = x + 0.05;
-    let mut cursor_y = y + 0.05;
-    let inner_w = (width - 0.1).max(0.1);
-    let mut row_max_d = 0.0f32;
+    let pad = 0.04;
+    let inner_x = x + pad;
+    let inner_y = y + pad;
+    let inner_w = (width - 2.0 * pad).max(0.1);
+    let inner_d = (depth - 2.0 * pad).max(0.1);
 
-    for child in &node.children {
-        let frac = (child.subtree_size.max(1) as f32) / total;
-        let child_area = inner_w * (depth - 0.1).max(0.1) * frac;
-        let child_w = (child_area * 1.4).sqrt().max(0.1);
-        let child_d = (child_area / child_w).max(0.1);
+    let mut remaining = node.children.as_slice();
+    let mut cursor_y = inner_y;
+    let mut remaining_d = inner_d;
 
-        if cursor_x + child_w > x + width - 0.05 && cursor_x > x + 0.05 {
-            cursor_x = x + 0.05;
-            cursor_y += row_max_d + 0.05;
-            row_max_d = 0.0;
+    while !remaining.is_empty() && remaining_d > 0.1 {
+        // Take a row of children that fit reasonably
+        let mut row_area = 0.0f32;
+        let mut row_count = 0;
+        let mut best_aspect = f32::MAX;
+
+        for i in 1..=remaining.len() {
+            let area: f32 = remaining[..i]
+                .iter()
+                .map(|c| (c.subtree_size.max(1) as f32) / total * inner_w * inner_d)
+                .sum();
+            let row_d = (area / inner_w).max(0.1);
+            let aspect = (inner_w / (area / row_d)).max(row_d / inner_w);
+            if aspect < best_aspect || row_count == 0 {
+                best_aspect = aspect;
+                row_area = area;
+                row_count = i;
+            } else {
+                break;
+            }
         }
 
-        if cursor_y + child_d > y + depth - 0.05 {
-            break; // no more room
+        row_count = row_count.max(1);
+        let row = &remaining[..row_count];
+        let row_d = (row_area / inner_w).min(remaining_d).max(0.1);
+
+        let mut cursor_x = inner_x;
+        for child in row {
+            let frac = (child.subtree_size.max(1) as f32) / total;
+            let child_area = frac * inner_w * inner_d;
+            let child_w = (child_area / row_d).max(0.08);
+
+            layout_recursive(
+                child,
+                cursor_x,
+                cursor_y,
+                child_w.min(inner_w - (cursor_x - inner_x)),
+                row_d,
+                z + height,
+                out,
+            );
+
+            cursor_x += child_w;
         }
 
-        layout_recursive(
-            child,
-            cursor_x,
-            cursor_y,
-            child_w.min(inner_w),
-            child_d.min(depth - 0.1),
-            z + height,
-            out,
-        );
-
-        cursor_x += child_w + 0.02;
-        row_max_d = row_max_d.max(child_d);
+        cursor_y += row_d;
+        remaining_d -= row_d;
+        remaining = &remaining[row_count..];
     }
 }
