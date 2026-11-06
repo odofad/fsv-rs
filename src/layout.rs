@@ -6,6 +6,7 @@ const LEAF_HEIGHT: f64 = 128.0;
 const BORDER_PROPORTION: f64 = 0.01;
 const ROOT_ASPECT: f64 = 1.2;
 const DIR_SLANT: f64 = 0.032;
+const GOLDEN: f64 = 1.618033988749895;
 
 /// How the renderer turns original units into the world.
 /// None of this is written back onto the node.
@@ -42,6 +43,13 @@ pub struct BoxGeom {
     pub name: String,
     pub path: std::path::PathBuf,
     pub is_base: bool,
+    /// Top-face inset, as a fraction of width and depth. From mapv_side_slant_ratios.
+    pub slant_x: f32,
+    pub slant_y: f32,
+    /// Folder outline. Collapsed directories only.
+    pub folder: bool,
+    /// Name laid on the top face.
+    pub label: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +84,15 @@ fn represented_bytes(node: &Node) -> f64 {
     // fsv: max(256, own size) + subtree-without-self for directories.
     // Our subtree_size already includes own size.
     (node.subtree_size.max(node.size).max(256)) as f64
+}
+
+fn side_slant(kind: &NodeType) -> f64 {
+    match kind {
+        NodeType::Directory => 0.032,
+        NodeType::File => 0.064,
+        NodeType::Symlink => 0.333,
+        NodeType::Other => 0.0,
+    }
 }
 
 /// Fill `node.map` for the root and every descendant. Original units only.
@@ -328,18 +345,64 @@ fn push_box(
     if w < 1e-6 || d < 1e-6 || geom.height <= 0.0 {
         return;
     }
+    let width = (w * xy) as f32;
+    let depth = (d * xy) as f32;
+    let height = (geom.height * z_scale) as f32;
+    let k = side_slant(&node.kind) as f32;
+    let slant_x = ((k * width).min(height) / width).clamp(0.0, 0.45);
+    let slant_y = ((k * depth).min(height) / depth).clamp(0.0, 0.45);
+    // Same rule as mapv_draw_recursive: a collapsed directory wears the
+    // folder and its own name. An expanded one shows its children, and
+    // only the files among them are labelled.
+    let collapsed_dir = node.is_dir() && !node.expanded;
     out.push(BoxGeom {
         x: ((c0x + c1x) * 0.5 * xy) as f32,
         y: ((c0y + c1y) * 0.5 * xy) as f32,
         z: ((z0 + geom.height * 0.5) * z_scale) as f32,
-        width: (w * xy) as f32,
-        depth: (d * xy) as f32,
-        height: (geom.height * z_scale) as f32,
+        width,
+        depth,
+        height,
         kind: node.kind.clone(),
         name: node.name.clone(),
         path: node.path.clone(),
         is_base,
+        slant_x,
+        slant_y,
+        folder: collapsed_dir && !is_base,
+        label: !is_base && !node.name.is_empty() && (collapsed_dir || !node.is_dir()),
     });
+}
+
+/// Folder outline on the top face, in unit-box space (-0.5..0.5).
+/// Port of mapv_gldraw_folder. `ox`/`oy` are the slant insets.
+pub fn folder_outline(ox: f32, oy: f32) -> Vec<[f32; 2]> {
+    let hw = 0.5 - ox;
+    let hd = 0.5 - oy;
+    let dims_x = hw * 2.0;
+    let dims_y = hd * 2.0;
+    let border = 0.0625 * dims_x.min(dims_y);
+    let c0x = -hw + border;
+    let c0y = -hd + border;
+    let c1x = hw - border;
+    let c1y = hd - border;
+    let tab_x = c1x - (GOLDEN as f32 - 1.0) * (c1x - c0x);
+    let tab_y = c1y - border;
+    vec![
+        [c0x, c0y],
+        [c0x, tab_y],
+        [c0x + border, c1y],
+        [tab_x - border, c1y],
+        [tab_x, tab_y],
+        [c1x, tab_y],
+        [c1x, c0y],
+        [c0x, c0y],
+    ]
+}
+
+/// Corner-bracket length, as a fraction of the box. From mapv_gldraw_cursor.
+pub fn cursor_bar() -> f32 {
+    let t = GOLDEN as f32 - 1.0;
+    t * t * t * t
 }
 
 pub fn treev_layout(root: &Node) -> LayoutResult {
@@ -385,6 +448,10 @@ fn treev_recursive(
         name: node.name.clone(),
         path: node.path.clone(),
         is_base: node.is_dir(),
+        slant_x: 0.0,
+        slant_y: 0.0,
+        folder: false,
+        label: false,
     });
 
     if !node.is_dir() || !node.expanded || node.children.is_empty() {
