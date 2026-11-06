@@ -10,9 +10,10 @@ pub struct BoxGeom {
     pub height: f32,
     pub kind: NodeType,
     pub name: String,
-    pub path: std::path::PathBuf, // for picking
+    pub path: std::path::PathBuf,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum LayoutMode {
     MapV,
     TreeV,
@@ -78,7 +79,6 @@ fn layout_recursive(
         path: node.path.clone(),
     });
 
-    // Only recurse into children if expanded
     if !node.is_dir() || !node.expanded || node.children.is_empty() {
         return;
     }
@@ -179,7 +179,6 @@ fn treev_recursive(
         path: node.path.clone(),
     });
 
-    // Only show children if expanded
     if !node.is_dir() || !node.expanded || node.children.is_empty() {
         return;
     }
