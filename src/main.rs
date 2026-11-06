@@ -121,19 +121,18 @@ fn click_expand(
         return;
     }
 
-    let Ok(window) = windows.single() else { return; };
+    let Ok(window) = windows.get_single() else { return; };
     let Some(cursor) = window.cursor_position() else { return; };
-    let Ok((camera, cam_transform)) = cameras.single() else { return; };
+    let Ok((camera, cam_transform)) = cameras.get_single() else { return; };
 
     let Some(ray) = camera.viewport_to_world(cam_transform, cursor).ok() else { return; };
 
-    // Simple closest-box pick
     let mut best: Option<(f32, PathBuf)> = None;
     for (pick, transform) in &pickables {
         let half = transform.scale * 0.5;
         let min = transform.translation - half;
         let max = transform.translation + half;
-        if let Some(dist) = ray_aabb(ray.origin, ray.direction, min, max) {
+        if let Some(dist) = ray_aabb(ray.origin, *ray.direction, min, max) {
             if best.as_ref().map_or(true, |(d, _)| dist < *d) {
                 best = Some((dist, pick.path.clone()));
             }
@@ -145,8 +144,12 @@ fn click_expand(
     }
 }
 
-fn ray_aabb(origin: Vec3, dir: Dir3, min: Vec3, max: Vec3) -> Option<f32> {
-    let inv = Vec3::new(1.0 / dir.x, 1.0 / dir.y, 1.0 / dir.z);
+fn ray_aabb(origin: Vec3, dir: Vec3, min: Vec3, max: Vec3) -> Option<f32> {
+    let inv = Vec3::new(
+        if dir.x != 0.0 { 1.0 / dir.x } else { f32::INFINITY },
+        if dir.y != 0.0 { 1.0 / dir.y } else { f32::INFINITY },
+        if dir.z != 0.0 { 1.0 / dir.z } else { f32::INFINITY },
+    );
     let t1 = (min - origin) * inv;
     let t2 = (max - origin) * inv;
     let tmin = t1.min(t2);
