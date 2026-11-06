@@ -5,5 +5,6 @@ edition = "2021"
 
 [dependencies]
 bevy = "0.15"
+bevy_egui = "0.31"
 jwalk = "0.8"
 clap = { version = "4", features = ["derive"] }
