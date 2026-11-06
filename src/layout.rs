@@ -9,6 +9,7 @@ pub struct BoxGeom {
     pub depth: f32,
     pub height: f32,
     pub kind: NodeType,
+    #[allow(dead_code)]
     pub name: String,
     pub path: std::path::PathBuf,
 }
