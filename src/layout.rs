@@ -12,6 +12,18 @@ pub struct BoxGeom {
     pub name: String,
 }
 
+pub enum LayoutMode {
+    MapV,
+    TreeV,
+}
+
+pub fn layout(root: &Node, mode: LayoutMode) -> Vec<BoxGeom> {
+    match mode {
+        LayoutMode::MapV => mapv_layout(root),
+        LayoutMode::TreeV => treev_layout(root),
+    }
+}
+
 pub fn mapv_layout(root: &Node) -> Vec<BoxGeom> {
     let mut boxes = Vec::new();
     if root.subtree_size == 0 {
@@ -49,7 +61,6 @@ fn layout_recursive(
         return;
     }
 
-    // Gentler height scale so big nodes stand out without towers
     let rel = (node.subtree_size.max(1) as f32 / parent_total.max(1.0)).clamp(0.0, 1.0);
     let base = if node.is_dir() { 0.15 } else { 0.06 };
     let height = base + rel * 0.25;
@@ -128,5 +139,59 @@ fn layout_recursive(
         cursor_y += row_d;
         remaining_d -= row_d;
         remaining = &remaining[row_count..];
+    }
+}
+
+// ---------- TreeV ----------
+
+pub fn treev_layout(root: &Node) -> Vec<BoxGeom> {
+    let mut boxes = Vec::new();
+    if root.subtree_size == 0 {
+        return boxes;
+    }
+
+    // Root platform at origin
+    treev_recursive(root, 0.0, 0.0, 0.0, 2.5, 0.0, &mut boxes);
+    boxes
+}
+
+fn treev_recursive(
+    node: &Node,
+    cx: f32,
+    cy: f32,
+    z: f32,
+    radius: f32,
+    parent_angle: f32,
+    out: &mut Vec<BoxGeom>,
+) {
+    let height = if node.is_dir() { 0.2 } else { 0.1 };
+
+    // Platform / leaf as a box for now (radial placement)
+    let size = radius * 0.6;
+    out.push(BoxGeom {
+        x: cx,
+        y: cy,
+        z: z + height / 2.0,
+        width: size,
+        depth: size,
+        height,
+        kind: node.kind.clone(),
+        name: node.name.clone(),
+    });
+
+    if !node.is_dir() || node.children.is_empty() {
+        return;
+    }
+
+    let n = node.children.len() as f32;
+    let angle_step = std::f32::consts::TAU / n.max(1.0);
+    let child_radius = radius * 0.55;
+    let dist = radius * 1.4;
+
+    for (i, child) in node.children.iter().enumerate() {
+        let angle = parent_angle + i as f32 * angle_step;
+        let child_cx = cx + dist * angle.cos();
+        let child_cy = cy + dist * angle.sin();
+        treev_recursive(child, child_cx, child_cy, z + height, child_radius, angle, out);
     }
 }
