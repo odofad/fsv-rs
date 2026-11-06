@@ -555,7 +555,8 @@ fn arc_mesh(arc: &layout::ArcGeom) -> (Mesh, Vec3, Vec3) {
     if theta1 < theta0 {
         std::mem::swap(&mut theta0, &mut theta1);
     }
-    let span = (theta1 - theta0).max(0.01);
+    // Don't fatten a thin branch. 0.01 rad is a whole block at these radii.
+    let span = (theta1 - theta0).max(0.0002);
     let segs = ((span / 0.09).ceil() as usize).clamp(2, 96);
     let y0 = arc.y;
     let y1 = arc.y + arc.height.max(0.01);
