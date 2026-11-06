@@ -23,6 +23,9 @@ struct AppState {
     root: node::Node,
     mode: layout::LayoutMode,
     selected: Option<PathBuf>,
+    /// Rebuild the meshes. Not Bevy's change flag: writing geometry
+    /// onto the tree must not schedule another rebuild by itself.
+    dirty: bool,
 }
 
 #[derive(Component)]
@@ -64,9 +67,10 @@ fn main() {
                     root,
                     mode,
                     selected: None,
+                    dirty: true,
                 })
                 .add_systems(Startup, setup)
-                .add_systems(Update, (orbit_camera, click_expand, rebuild_layout, side_panel))
+                .add_systems(Update, (orbit_camera, click_expand, side_panel, rebuild_layout))
                 .run();
         }
         Err(e) => {
@@ -78,7 +82,7 @@ fn main() {
 
 fn setup(
     mut commands: Commands,
-    state: Res<AppState>,
+    mut state: ResMut<AppState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -105,7 +109,8 @@ fn setup(
         ..default()
     });
 
-    spawn_geometry(&mut commands, &state, &mut meshes, &mut materials);
+    spawn_geometry(&mut commands, &mut state, &mut meshes, &mut materials);
+    state.dirty = false;
 }
 
 fn orbit_camera(
@@ -149,11 +154,11 @@ fn orbit_camera(
 
 fn spawn_geometry(
     commands: &mut Commands,
-    state: &AppState,
+    state: &mut AppState,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
 ) {
-    let result = layout::layout(&state.root, state.mode);
+    let result = layout::layout(&mut state.root, state.mode);
     let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
     let line_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.75, 0.78, 0.85),
@@ -272,7 +277,9 @@ fn click_expand(
 
     if let Some((_, path)) = best {
         state.selected = Some(path.clone());
-        toggle_expanded(&mut state.root, &path);
+        if toggle_expanded(&mut state.root, &path) {
+            state.dirty = true;
+        }
     }
 }
 
@@ -299,8 +306,9 @@ fn toggle_expanded(node: &mut node::Node, path: &Path) -> bool {
     if node.path == path {
         if node.is_dir() {
             node.expanded = !node.expanded;
+            return true;
         }
-        return true;
+        return false;
     }
     for child in &mut node.children {
         if toggle_expanded(child, path) {
@@ -312,24 +320,26 @@ fn toggle_expanded(node: &mut node::Node, path: &Path) -> bool {
 
 fn rebuild_layout(
     mut commands: Commands,
-    state: Res<AppState>,
+    mut state: ResMut<AppState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     existing: Query<Entity, With<MapPiece>>,
 ) {
-    if !state.is_changed() {
+    if !state.dirty {
         return;
     }
     for e in &existing {
         commands.entity(e).despawn();
     }
-    spawn_geometry(&mut commands, &state, &mut meshes, &mut materials);
+    spawn_geometry(&mut commands, &mut state, &mut meshes, &mut materials);
+    state.dirty = false;
 }
 
 fn side_panel(
     mut contexts: EguiContexts,
     mut state: ResMut<AppState>,
 ) {
+    let mut changed = false;
     egui::SidePanel::left("tree_panel").show(contexts.ctx_mut(), |ui| {
         ui.heading("fsv-rs");
         ui.separator();
@@ -345,16 +355,20 @@ fn side_panel(
                 layout::LayoutMode::MapV => layout::LayoutMode::TreeV,
                 layout::LayoutMode::TreeV => layout::LayoutMode::MapV,
             };
+            changed = true;
         }
 
         ui.separator();
         ui.label("Tree");
 
-        show_node(ui, &mut state.root, 0);
+        changed |= show_node(ui, &mut state.root, 0);
     });
+    if changed {
+        state.dirty = true;
+    }
 }
 
-fn show_node(ui: &mut egui::Ui, node: &mut node::Node, depth: usize) {
+fn show_node(ui: &mut egui::Ui, node: &mut node::Node, depth: usize) -> bool {
     let indent = "  ".repeat(depth);
     let marker = if node.is_dir() {
         if node.expanded { "[-]" } else { "[+]" }
@@ -365,15 +379,18 @@ fn show_node(ui: &mut egui::Ui, node: &mut node::Node, depth: usize) {
     let size_str = human_size(node.subtree_size);
     let label = format!("{}{} {}  ({})", indent, marker, node.name, size_str);
 
+    let mut changed = false;
     if ui.button(label).clicked() && node.is_dir() {
         node.expanded = !node.expanded;
+        changed = true;
     }
 
     if node.expanded {
         for child in &mut node.children {
-            show_node(ui, child, depth + 1);
+            changed |= show_node(ui, child, depth + 1);
         }
     }
+    changed
 }
 
 fn human_size(bytes: u64) -> String {
