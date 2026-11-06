@@ -33,8 +33,8 @@ pub fn mapv_layout(root: &Node) -> Vec<BoxGeom> {
         return boxes;
     }
 
-    let root_w = 12.0;
-    let root_d = 10.0;
+    let root_w = 14.0;
+    let root_d = 12.0;
 
     layout_recursive(
         root,
@@ -44,6 +44,7 @@ pub fn mapv_layout(root: &Node) -> Vec<BoxGeom> {
         root_d,
         0.0,
         root.subtree_size as f32,
+        true, // is root
         &mut boxes,
     );
 
@@ -58,15 +59,21 @@ fn layout_recursive(
     depth: f32,
     z: f32,
     parent_total: f32,
+    is_root: bool,
     out: &mut Vec<BoxGeom>,
 ) {
-    if width < 0.08 || depth < 0.08 {
+    if width < 0.06 || depth < 0.06 {
         return;
     }
 
     let rel = (node.subtree_size.max(1) as f32 / parent_total.max(1.0)).clamp(0.0, 1.0);
-    let base = if node.is_dir() { 0.12 } else { 0.05 };
-    let height = base + rel * 0.18;
+
+    // Parent/root is a thin base; children are the visible blocks
+    let height = if is_root || (node.is_dir() && node.expanded) {
+        0.08
+    } else {
+        0.12 + rel * 0.25
+    };
 
     out.push(BoxGeom {
         x: x + width / 2.0,
@@ -85,13 +92,15 @@ fn layout_recursive(
     }
 
     let total = node.subtree_size.max(1) as f32;
-    let pad = 0.03;
+    let pad = 0.04;
     let inner_x = x + pad;
     let inner_y = y + pad;
-    let inner_w = (width - 2.0 * pad).max(0.1);
-    let inner_d = (depth - 2.0 * pad).max(0.1);
+    let inner_w = (width - 2.0 * pad).max(0.08);
+    let inner_d = (depth - 2.0 * pad).max(0.08);
 
-    // Squarified-style: prefer shorter side for rows
+    // Children sit on top of the base as individual blocks
+    let child_z = z + height;
+
     let mut remaining = node.children.as_slice();
     let mut cursor_x = inner_x;
     let mut cursor_y = inner_y;
@@ -103,7 +112,6 @@ fn layout_recursive(
         let side = if horizontal { remain_w } else { remain_d };
         let other = if horizontal { remain_d } else { remain_w };
 
-        // Take children until aspect gets worse
         let mut best_count = 1;
         let mut best_aspect = f32::MAX;
         let mut accum = 0.0f32;
@@ -116,7 +124,7 @@ fn layout_recursive(
             if aspect < best_aspect {
                 best_aspect = aspect;
                 best_count = i;
-            } else if i > 2 {
+            } else if i > 3 {
                 break;
             }
         }
@@ -137,7 +145,7 @@ fn layout_recursive(
                 (cursor_x, cursor_y + along, thick, child_len)
             };
 
-            layout_recursive(child, cx, cy, cw, cd, z + height, total, out);
+            layout_recursive(child, cx, cy, cw, cd, child_z, total, false, out);
             along += child_len;
         }
 
