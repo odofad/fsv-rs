@@ -13,6 +13,11 @@ const TARGET_WIDTH: f64 = 20.0;
 /// Keep directory prisms visible when the real filesystem is huge.
 /// Ratio of directory height to file height stays 3:1, same as fsv.
 const MIN_DIR_HEIGHT: f64 = 0.32;
+/// Fraction of each cell left empty, so neighbours do not touch.
+/// 0.40 means a street about 40% of the cell between two blocks.
+const CELL_GAP: f64 = 0.40;
+/// Parent rim, as a fraction of the shorter side, before packing children.
+const EDGE_MARGIN: f64 = 0.14;
 
 #[derive(Debug, Clone)]
 pub struct BoxGeom {
@@ -175,8 +180,9 @@ fn place_children(
 
     let nominal_border = (BORDER_PROPORTION * (dims_x * dims_y).sqrt())
         .min(dims_x.min(dims_y) / 3.0);
-    dims_x -= nominal_border;
-    dims_y -= nominal_border;
+    let edge = (dims_x.min(dims_y) * EDGE_MARGIN).max(nominal_border);
+    dims_x -= edge;
+    dims_y -= edge;
     if dims_x <= 1.0 || dims_y <= 1.0 {
         return;
     }
@@ -246,26 +252,15 @@ fn place_children(
         while block_i < blocks.len() && Some(block_i) != next_first {
             let block = &blocks[block_i];
             let bw = block.area / row_depth;
-            let node_area = scale_factor * block.bytes;
-            let kdim = bw + row_depth;
-            let inner = block.area - node_area;
-            let disc = kdim * kdim - 4.0 * inner;
-            let mut border = if disc > 0.0 {
-                0.25 * (kdim - disc.sqrt())
-            } else {
-                0.0
-            };
-            if !border.is_finite() || border < 0.0 {
-                border = 0.0;
-            }
-            let max_border = (bw.min(row_depth) * 0.45).max(0.0);
-            border = border.min(max_border);
+            // Wide gutter: shrink the cell on every side. Area ratios stay.
+            let inset_x = (bw * CELL_GAP * 0.5).min(bw * 0.46);
+            let inset_y = (row_depth * CELL_GAP * 0.5).min(row_depth * 0.46);
 
             let child = &dir.children[block.index];
-            let cc0x = pos_x - bw + border;
-            let cc0y = pos_y - row_depth + border;
-            let cc1x = pos_x - border;
-            let cc1y = pos_y - border;
+            let cc0x = pos_x - bw + inset_x;
+            let cc0y = pos_y - row_depth + inset_y;
+            let cc1x = pos_x - inset_x;
+            let cc1y = pos_y - inset_y;
             let height = if child.is_dir() { DIR_HEIGHT } else { LEAF_HEIGHT };
 
             emit_box(
@@ -357,7 +352,7 @@ fn treev_recursive(
     let n = node.children.len().max(1) as f32;
     let angle_step = std::f32::consts::TAU / n;
     let child_radius = radius * 0.55;
-    let dist = radius * 1.8;
+    let dist = radius * 2.6;
 
     for (i, child) in node.children.iter().enumerate() {
         let angle = parent_angle + i as f32 * angle_step;
