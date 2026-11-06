@@ -5,6 +5,8 @@ mod layout;
 use std::path::{PathBuf, Path};
 use clap::Parser;
 use bevy::prelude::*;
+use bevy::render::mesh::{Indices, PrimitiveTopology};
+use bevy::render::render_asset::RenderAssetUsages;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 
 #[derive(Parser, Debug)]
@@ -165,6 +167,16 @@ fn spawn_geometry(
         unlit: true,
         ..default()
     });
+    let folder_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.08, 0.1, 0.14),
+        unlit: true,
+        ..default()
+    });
+    let cursor_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 1.0, 1.0),
+        unlit: true,
+        ..default()
+    });
 
     for geom in result.boxes {
         let mut color = color_for_kind(&geom.kind);
@@ -173,62 +185,186 @@ fn spawn_geometry(
             color = Color::srgba(r * 0.45, g * 0.45, b * 0.45, a);
         }
 
+        let mesh = meshes.add(slanted_box(geom.slant_x, geom.slant_y));
+        let translation = Vec3::new(geom.x, geom.z, geom.y);
+        let scale = Vec3::new(geom.width.max(0.01), geom.height.max(0.01), geom.depth.max(0.01));
+
         commands.spawn((
-            Mesh3d(cube.clone()),
+            Mesh3d(mesh),
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: color,
                 perceptual_roughness: 0.55,
                 ..default()
             })),
             Transform {
-                translation: Vec3::new(geom.x, geom.z, geom.y),
-                scale: Vec3::new(geom.width.max(0.01), geom.height.max(0.01), geom.depth.max(0.01)),
+                translation,
+                scale,
                 ..default()
             },
             Pickable { path: geom.path.clone() },
             MapPiece,
         ));
 
-        if !geom.is_base && geom.width > 0.4 && geom.depth > 0.4 && !geom.name.is_empty() {
-            let label = if geom.name.len() > 14 {
-                format!("{}...", &geom.name[..11])
-            } else {
-                geom.name.clone()
-            };
-            commands.spawn((
-                Text2d::new(label),
-                TextFont { font_size: 28.0, ..default() },
-                TextColor(Color::WHITE),
-                Transform {
-                    translation: Vec3::new(geom.x, geom.z + geom.height * 0.55 + 0.08, geom.y),
-                    rotation: Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
-                    scale: Vec3::splat(0.012),
-                    ..default()
-                },
-                MapPiece,
-            ));
+        if geom.folder {
+            let pts = layout::folder_outline(geom.slant_x, geom.slant_y);
+            let y = translation.y + scale.y * 0.5 + 0.012;
+            let thick = (scale.x.min(scale.z) * 0.012).clamp(0.008, 0.04);
+            for w in pts.windows(2) {
+                let a = Vec3::new(translation.x + w[0][0] * scale.x, y, translation.z + w[0][1] * scale.z);
+                let b = Vec3::new(translation.x + w[1][0] * scale.x, y, translation.z + w[1][1] * scale.z);
+                spawn_segment(commands, cube.clone(), folder_mat.clone(), a, b, thick);
+            }
+        }
+
+        if geom.label && !geom.name.is_empty() {
+            spawn_label(commands, &geom, translation, scale);
+        }
+
+        if state.selected.as_ref() == Some(&geom.path) {
+            spawn_cursor(commands, cube.clone(), cursor_mat.clone(), translation, scale);
         }
     }
 
     for line in result.lines {
         let from = Vec3::new(line.from[0], line.from[1], line.from[2]);
         let to = Vec3::new(line.to[0], line.to[1], line.to[2]);
-        let mid = (from + to) * 0.5;
-        let dir = to - from;
-        let len = dir.length().max(0.01);
-        let rot = Quat::from_rotation_arc(Vec3::Y, dir.normalize_or_zero());
+        spawn_segment(commands, cube.clone(), line_mat.clone(), from, to, 0.02);
+    }
+}
 
-        commands.spawn((
-            Mesh3d(cube.clone()),
-            MeshMaterial3d(line_mat.clone()),
-            Transform {
-                translation: mid,
-                rotation: rot,
-                scale: Vec3::new(0.02, len, 0.02),
-                ..default()
-            },
-            MapPiece,
-        ));
+/// Unit box (-0.5..0.5) with the top face inset. Scale it by the block size.
+fn slanted_box(ox: f32, oy: f32) -> Mesh {
+    let ox = ox.clamp(0.0, 0.45);
+    let oy = oy.clamp(0.0, 0.45);
+    let b = [
+        Vec3::new(-0.5, -0.5, -0.5),
+        Vec3::new(0.5, -0.5, -0.5),
+        Vec3::new(0.5, -0.5, 0.5),
+        Vec3::new(-0.5, -0.5, 0.5),
+    ];
+    let t = [
+        Vec3::new(-0.5 + ox, 0.5, -0.5 + oy),
+        Vec3::new(0.5 - ox, 0.5, -0.5 + oy),
+        Vec3::new(0.5 - ox, 0.5, 0.5 - oy),
+        Vec3::new(-0.5 + ox, 0.5, 0.5 - oy),
+    ];
+    let quads = [
+        [b[0], b[1], b[2], b[3]],
+        [t[0], t[3], t[2], t[1]],
+        [b[0], t[0], t[1], b[1]],
+        [b[1], t[1], t[2], b[2]],
+        [b[2], t[2], t[3], b[3]],
+        [b[3], t[3], t[0], b[0]],
+    ];
+
+    let mut positions = Vec::with_capacity(24);
+    let mut normals = Vec::with_capacity(24);
+    let mut uvs = Vec::with_capacity(24);
+    let mut indices = Vec::with_capacity(36);
+    for quad in quads {
+        let n = (quad[1] - quad[0]).cross(quad[2] - quad[0]).normalize_or_zero();
+        let base = positions.len() as u32;
+        for p in quad {
+            positions.push([p.x, p.y, p.z]);
+            normals.push([n.x, n.y, n.z]);
+            uvs.push([0.0, 0.0]);
+        }
+        indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
+
+fn spawn_segment(
+    commands: &mut Commands,
+    cube: Handle<Mesh>,
+    mat: Handle<StandardMaterial>,
+    from: Vec3,
+    to: Vec3,
+    thickness: f32,
+) {
+    let mid = (from + to) * 0.5;
+    let dir = to - from;
+    let len = dir.length().max(0.001);
+    let rot = Quat::from_rotation_arc(Vec3::Y, dir.normalize_or_zero());
+    commands.spawn((
+        Mesh3d(cube),
+        MeshMaterial3d(mat),
+        Transform {
+            translation: mid,
+            rotation: rot,
+            scale: Vec3::new(thickness, len, thickness),
+        },
+        MapPiece,
+    ));
+}
+
+fn spawn_label(commands: &mut Commands, geom: &layout::BoxGeom, translation: Vec3, scale: Vec3) {
+    let shown: String = geom.name.chars().take(22).collect();
+    let n = shown.chars().count().max(1) as f32;
+    let top_w = scale.x * (1.0 - 2.0 * geom.slant_x) * 0.8125;
+    let top_d = scale.z * (1.0 - 2.0 * geom.slant_y) * 0.382;
+    if top_w < 0.05 || top_d < 0.03 {
+        return;
+    }
+    let font = 40.0;
+    let scale_px = (top_w / (n * font * 0.55)).min(top_d / font);
+    if scale_px < 0.0008 {
+        return;
+    }
+    commands.spawn((
+        Text2d::new(shown),
+        TextFont {
+            font_size: font,
+            ..default()
+        },
+        TextColor(Color::srgb(0.95, 0.97, 1.0)),
+        Transform {
+            translation: Vec3::new(translation.x, translation.y + scale.y * 0.5 + 0.02, translation.z),
+            rotation: Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+            scale: Vec3::splat(scale_px),
+        },
+        MapPiece,
+    ));
+}
+
+fn spawn_cursor(
+    commands: &mut Commands,
+    cube: Handle<Mesh>,
+    mat: Handle<StandardMaterial>,
+    translation: Vec3,
+    scale: Vec3,
+) {
+    let half = scale * 0.52;
+    let c0 = translation - half;
+    let c1 = translation + half;
+    let bar = (c1 - c0) * layout::cursor_bar();
+    let thick = (scale.x.min(scale.y).min(scale.z) * 0.04).clamp(0.01, 0.05);
+    for c in 0..8 {
+        let (px, dx) = if c & 1 != 0 {
+            (c1.x, -bar.x)
+        } else {
+            (c0.x, bar.x)
+        };
+        let (py, dy) = if c & 2 != 0 {
+            (c1.y, -bar.y)
+        } else {
+            (c0.y, bar.y)
+        };
+        let (pz, dz) = if c & 4 != 0 {
+            (c1.z, -bar.z)
+        } else {
+            (c0.z, bar.z)
+        };
+        let p = Vec3::new(px, py, pz);
+        spawn_segment(commands, cube.clone(), mat.clone(), p, p + Vec3::new(dx, 0.0, 0.0), thick);
+        spawn_segment(commands, cube.clone(), mat.clone(), p, p + Vec3::new(0.0, dy, 0.0), thick);
+        spawn_segment(commands, cube.clone(), mat.clone(), p, p + Vec3::new(0.0, 0.0, dz), thick);
     }
 }
 
@@ -278,6 +414,8 @@ fn click_expand(
     if let Some((_, path)) = best {
         state.selected = Some(path.clone());
         if toggle_expanded(&mut state.root, &path) {
+            state.dirty = true;
+        } else {
             state.dirty = true;
         }
     }
