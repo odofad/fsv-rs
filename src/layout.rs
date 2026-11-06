@@ -52,6 +52,8 @@ pub struct BoxGeom {
     pub folder: bool,
     /// Name laid on the top face.
     pub label: bool,
+    /// Yaw around the up axis, radians. MapV leaves this at 0.
+    pub yaw: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -66,9 +68,26 @@ pub enum LayoutMode {
     TreeV,
 }
 
+/// Annular sector. TreeV platforms and the dark red branches.
+#[derive(Debug, Clone)]
+pub struct ArcGeom {
+    pub r0: f32,
+    pub r1: f32,
+    pub theta0: f32,
+    pub theta1: f32,
+    pub y: f32,
+    pub height: f32,
+    pub path: std::path::PathBuf,
+    pub name: String,
+    pub kind: NodeType,
+    pub branch: bool,
+    pub label: bool,
+}
+
 pub struct LayoutResult {
     pub boxes: Vec<BoxGeom>,
     pub lines: Vec<LineGeom>,
+    pub arcs: Vec<ArcGeom>,
     #[allow(dead_code)]
     pub span: f32,
 }
@@ -343,6 +362,7 @@ fn emit_mapv(root: &Node, view: &View) -> LayoutResult {
         return LayoutResult {
             boxes,
             lines: Vec::new(),
+            arcs: Vec::new(),
             span: view.target_width as f32,
         };
     };
@@ -363,6 +383,7 @@ fn emit_mapv(root: &Node, view: &View) -> LayoutResult {
     LayoutResult {
         boxes,
         lines: Vec::new(),
+        arcs: Vec::new(),
         span: view.target_width as f32,
     }
 }
@@ -449,6 +470,7 @@ fn push_box(
         slant_y,
         folder: collapsed_dir && !is_base,
         label: !is_base && !node.name.is_empty() && (collapsed_dir || !node.is_dir()),
+        yaw: 0.0,
     });
 }
 
@@ -485,82 +507,379 @@ pub fn cursor_bar() -> f32 {
 }
 
 pub fn treev_layout(root: &Node) -> LayoutResult {
-    let mut boxes = Vec::new();
-    let mut lines = Vec::new();
-    if root.subtree_size == 0 {
-        return LayoutResult {
-            boxes,
-            lines,
-            span: 10.0,
-        };
+    // geometry.c treev_init / treev_arrange / treev_build_dir.
+    // A directory is an arc. Files and collapsed folders stand on it in rows.
+    // Expanded folders become the next arc out, joined by a dark red branch.
+    const SPACING_D: f64 = 2048.0;
+    const BRANCH: f64 = 256.0;
+    const MIN_CORE: f64 = 8192.0;
+    const GROW: f64 = 1.25;
+    const MIN_ARC: f64 = 90.0;
+    const MAX_ARC: f64 = 225.0;
+
+    let mut core = MIN_CORE;
+    for _ in 0..24 {
+        // fstree's subtree arc is the root arc, or wider if children spread past it.
+        let (arc, _, sub) = tv_measure(root, core + SPACING_D);
+        let width = arc.max(sub);
+        if width > MAX_ARC {
+            core *= GROW;
+        } else if width < MIN_ARC && core > MIN_CORE {
+            core = (core / GROW).max(MIN_CORE);
+            if core <= MIN_CORE {
+                break;
+            }
+        } else {
+            break;
+        }
     }
 
-    treev_recursive(root, 0.0, 0.0, 0.0, 2.5, 0.0, &mut boxes, &mut lines);
+    let mut boxes = Vec::new();
+    let mut arcs = Vec::new();
+    let mut max_r = core + SPACING_D;
+    if root.expanded {
+        tv_emit(
+            root,
+            core + SPACING_D,
+            90.0,
+            0.0,
+            &mut boxes,
+            &mut arcs,
+            &mut max_r,
+        );
+        // The core loop, and the stem that reaches the root arc.
+        arcs.push(raw_arc(
+            core - 0.5 * BRANCH,
+            core + 0.5 * BRANCH,
+            0.0,
+            360.0,
+            0.0,
+            8.0,
+            root,
+            true,
+            false,
+        ));
+        arcs.push(raw_arc(
+            core,
+            core + SPACING_D,
+            90.0 - tv_half_deg(BRANCH, core + 0.5 * SPACING_D),
+            90.0 + tv_half_deg(BRANCH, core + 0.5 * SPACING_D),
+            0.0,
+            8.0,
+            root,
+            true,
+            false,
+        ));
+    } else {
+        tv_leaf(
+            root,
+            core,
+            0.5 * SPACING_D,
+            90.0,
+            0.0,
+            true,
+            &mut boxes,
+            &mut max_r,
+        );
+    }
+
+    let scale = 18.0 / max_r.max(1.0);
+    for b in &mut boxes {
+        b.x = (b.x as f64 * scale) as f32;
+        b.y = (b.y as f64 * scale) as f32;
+        b.z = (b.z as f64 * scale) as f32;
+        b.width = (b.width as f64 * scale) as f32;
+        b.depth = (b.depth as f64 * scale) as f32;
+        b.height = (b.height as f64 * scale) as f32;
+    }
+    for a in &mut arcs {
+        a.r0 = (a.r0 as f64 * scale) as f32;
+        a.r1 = (a.r1 as f64 * scale) as f32;
+        a.y = (a.y as f64 * scale) as f32;
+        a.height = (a.height as f64 * scale) as f32;
+    }
+
     LayoutResult {
         boxes,
-        lines,
-        span: 16.0,
+        lines: Vec::new(),
+        arcs,
+        span: (36.0_f64) as f32,
     }
 }
 
-fn treev_recursive(
-    node: &Node,
-    cx: f32,
-    cy: f32,
-    z: f32,
-    radius: f32,
-    parent_angle: f32,
-    boxes: &mut Vec<BoxGeom>,
-    lines: &mut Vec<LineGeom>,
-) {
-    let height = if node.is_dir() { 0.2 } else { 0.1 };
-    let size = radius * 0.6;
+fn tv_half_deg(width: f64, radius: f64) -> f64 {
+    (180.0 * width / std::f64::consts::PI) / radius.max(1.0) * 0.5
+}
 
+fn raw_arc(
+    r0: f64,
+    r1: f64,
+    theta0: f64,
+    theta1: f64,
+    y: f64,
+    height: f64,
+    node: &Node,
+    branch: bool,
+    label: bool,
+) -> ArcGeom {
+    ArcGeom {
+        r0: r0 as f32,
+        r1: r1 as f32,
+        theta0: theta0.to_radians() as f32,
+        theta1: theta1.to_radians() as f32,
+        y: y as f32,
+        height: height as f32,
+        path: node.path.clone(),
+        name: node.name.clone(),
+        kind: node.kind.clone(),
+        branch,
+        label,
+    }
+}
+
+/// Arc width of this platform, its depth, and the arc taken by expanded children.
+fn tv_measure(node: &Node, r0: f64) -> (f64, f64, f64) {
+    if !node.is_dir() || !node.expanded {
+        return (0.0, 0.0, 0.0);
+    }
+    let (depth, arc) = tv_reshape(node.children.len(), r0);
+    let child_r = r0 + depth + 2048.0;
+    let mut sub = 0.0;
+    for child in &node.children {
+        if child.is_dir() && child.expanded {
+            let (ca, _, cs) = tv_measure(child, child_r);
+            sub += ca.max(cs);
+        }
+    }
+    (arc, depth, sub)
+}
+
+fn tv_reshape(n_children: usize, r0: f64) -> (f64, f64) {
+    const LEAF: f64 = 256.0;
+    const W: f64 = 512.0;
+    const PI: f64 = std::f64::consts::PI;
+    let edge05 = 0.5 * LEAF;
+    let edge15 = 1.5 * LEAF;
+    let n = n_children.max(1) as f64;
+    let k = edge15 * n.sqrt().ceil() + edge05;
+    let area = k * k;
+    let mut d = tv_depth(area, r0, W);
+    if !d.is_finite() || d <= 0.0 {
+        d = edge15;
+    }
+    let mut depth = d;
+    let frac = (depth - edge05).rem_euclid(edge15);
+    depth += (edge15 - frac) + edge05;
+    let theta = 180.0 * (d + W) / (PI * (r0 + d));
+    let min_arc = (180.0 * (2.0 * LEAF + W) / PI) / r0.max(1.0);
+    (depth, theta.max(min_arc))
+}
+
+/// Positive root of the platform cubic in treev_reshape_platform.
+fn tv_depth(a: f64, r: f64, w: f64) -> f64 {
+    let a2 = a * a;
+    let a3 = a * a2;
+    let r2 = r * r;
+    let r3 = r * r2;
+    let r4 = r2 * r2;
+    let w2 = w * w;
+    let w3 = w2 * w;
+    let w4 = w2 * w2;
+    let ka = 72.0 * (a * r - w * (a + r)) - 64.0 * r3 + 48.0 * r2 * w - 36.0 * w2
+        + 24.0 * r * w2
+        - 8.0 * w3;
+    let t1 = 72.0 * a * w2 - 132.0 * a * r * w2 - 240.0 * a * w * r3 + 120.0 * a * w2 * r2
+        - 24.0 * a2 * w * r
+        - 60.0 * w3 * r;
+    let t2 = 12.0 * (w2 * r2 + a2 * w2 - w4 * r + w4 * r2 + a * w3 + w3);
+    let t3 = 48.0 * (w2 * r4 - w2 * r3 - w3 * r3) + 96.0 * (a3 + w3 * r2);
+    let t4 = 192.0 * a * r4 + 156.0 * a2 * r2 + 3.0 * w4 + 144.0 * a2 * w + 264.0 * a * w * r2;
+    let inside = t1 + t2 + t3 + t4;
+    if inside < 0.0 {
+        return -1.0;
+    }
+    let kb = 12.0 * inside.sqrt();
+    let kc = (kb.atan2(ka) / 3.0).cos();
+    let kd = ka.hypot(kb).cbrt();
+    if kd.abs() < 1e-9 {
+        return -1.0;
+    }
+    (-w - 2.0 * r) / 3.0
+        + ((8.0 * r2 - 4.0 * w * r + 2.0 * w2) / 3.0 + 4.0 * a + 2.0 * w) * kc / kd
+        + kc * kd / 6.0
+}
+
+fn tv_emit(
+    node: &Node,
+    r0: f64,
+    abs_deg: f64,
+    z0: f64,
+    boxes: &mut Vec<BoxGeom>,
+    arcs: &mut Vec<ArcGeom>,
+    max_r: &mut f64,
+) {
+    const LEAF: f64 = 256.0;
+    const SPACING_W: f64 = 512.0;
+    const SPACING_D: f64 = 2048.0;
+    const BRANCH: f64 = 256.0;
+    const PLATFORM_H: f64 = 158.2;
+    const PI: f64 = std::f64::consts::PI;
+    let edge05 = 0.5 * LEAF;
+    let edge15 = 1.5 * LEAF;
+
+    let (depth, arc) = tv_reshape(node.children.len(), r0);
+    let half = 0.5 * arc;
+    // Keep a gap of SPACING_W between neighbouring arcs.
+    let inset = ((180.0 * 0.5 * SPACING_W / PI) / r0.max(1.0)).min(half * 0.4);
+    arcs.push(raw_arc(
+        r0,
+        r0 + depth,
+        abs_deg - half + inset,
+        abs_deg + half - inset,
+        z0,
+        PLATFORM_H,
+        node,
+        false,
+        true,
+    ));
+    *max_r = max_r.max(r0 + depth);
+
+    // Rows of children, inner edge outward, last child first. Same as treev_build_dir.
+    let mut remaining = node.children.len();
+    let mut pos_r = r0 + LEAF;
+    let mut idx = node.children.len();
+    while idx > 0 {
+        let arc_len = (PI / 180.0) * pos_r * arc - SPACING_W;
+        let mut row_n = ((arc_len - edge05) / edge15).floor() as isize;
+        if row_n < 1 {
+            row_n = 1;
+        }
+        let row_n = row_n as usize;
+        let take = row_n.min(remaining);
+        let inter = (180.0 * edge15 / PI) / pos_r;
+        let mut theta = 0.5 * inter * (take as f64 - 1.0);
+        for _ in 0..take {
+            idx -= 1;
+            let child = &node.children[idx];
+            let full = !(child.is_dir() && child.expanded);
+            tv_leaf(
+                child,
+                r0,
+                pos_r - r0,
+                abs_deg + theta,
+                z0 + PLATFORM_H,
+                full,
+                boxes,
+                max_r,
+            );
+            theta -= inter;
+        }
+        remaining = remaining.saturating_sub(row_n);
+        pos_r += edge15;
+        if remaining == 0 {
+            break;
+        }
+    }
+
+    let child_r = r0 + depth + SPACING_D;
+    let mut first: Option<f64> = None;
+    let mut last: Option<f64> = None;
+    let mut cursor = -0.5
+        * node
+            .children
+            .iter()
+            .filter(|c| c.is_dir() && c.expanded)
+            .map(|c| {
+                let (ca, _, cs) = tv_measure(c, child_r);
+                ca.max(cs)
+            })
+            .sum::<f64>();
+    for child in &node.children {
+        if !(child.is_dir() && child.expanded) {
+            continue;
+        }
+        let (ca, _, cs) = tv_measure(child, child_r);
+        let w = ca.max(cs);
+        let rel = cursor + 0.5 * w;
+        cursor += w;
+        first = Some(first.unwrap_or(rel));
+        last = Some(rel);
+        tv_emit(
+            child,
+            child_r,
+            abs_deg + rel,
+            z0,
+            boxes,
+            arcs,
+            max_r,
+        );
+    }
+    // Branch leaving this platform toward its expanded children.
+    if let (Some(a), Some(b)) = (first, last) {
+        let r1 = r0 + depth;
+        let mid_r = r1 + 0.5 * SPACING_D;
+        let half_w = tv_half_deg(BRANCH, mid_r);
+        arcs.push(raw_arc(
+            r1,
+            mid_r,
+            abs_deg - half_w,
+            abs_deg + half_w,
+            z0,
+            8.0,
+            node,
+            true,
+            false,
+        ));
+        arcs.push(raw_arc(
+            mid_r - 0.5 * BRANCH,
+            mid_r + 0.5 * BRANCH,
+            abs_deg + a.min(b).min(0.0),
+            abs_deg + a.max(b).max(0.0),
+            z0,
+            8.0,
+            node,
+            true,
+            false,
+        ));
+    }
+}
+
+fn tv_leaf(
+    node: &Node,
+    r0: f64,
+    dist: f64,
+    abs_deg: f64,
+    z0: f64,
+    full: bool,
+    boxes: &mut Vec<BoxGeom>,
+    max_r: &mut f64,
+) {
+    const LEAF: f64 = 256.0;
+    let edge = if full { LEAF } else { 0.875 * LEAF };
+    let height = if full {
+        represented_bytes(node).sqrt()
+    } else {
+        LEAF / 64.0
+    };
+    let theta = abs_deg.to_radians();
+    let r = r0 + dist;
+    *max_r = max_r.max(r + 0.5 * edge);
+    let collapsed_dir = node.is_dir() && !node.expanded;
     boxes.push(BoxGeom {
-        x: cx,
-        y: cy,
-        z: z + height / 2.0,
-        width: size,
-        depth: size,
-        height,
+        x: (r * theta.cos()) as f32,
+        y: (r * theta.sin()) as f32,
+        z: (z0 + height * 0.5) as f32,
+        width: edge as f32,
+        depth: edge as f32,
+        height: height as f32,
         kind: node.kind.clone(),
         name: node.name.clone(),
         path: node.path.clone(),
         floor: false,
         slant_x: 0.0,
         slant_y: 0.0,
-        folder: false,
-        label: false,
+        folder: collapsed_dir,
+        label: full && !node.name.is_empty(),
+        yaw: theta as f32,
     });
-
-    if !node.is_dir() || !node.expanded || node.children.is_empty() {
-        return;
-    }
-
-    let n = node.children.len().max(1) as f32;
-    let angle_step = std::f32::consts::TAU / n;
-    let child_radius = radius * 0.55;
-    let dist = radius * 2.6;
-
-    for (i, child) in node.children.iter().enumerate() {
-        let angle = parent_angle + i as f32 * angle_step;
-        let child_cx = cx + dist * angle.cos();
-        let child_cy = cy + dist * angle.sin();
-
-        lines.push(LineGeom {
-            from: [cx, z + height, cy],
-            to: [child_cx, z + height, child_cy],
-        });
-
-        treev_recursive(
-            child,
-            child_cx,
-            child_cy,
-            z + height,
-            child_radius,
-            angle,
-            boxes,
-            lines,
-        );
-    }
 }
