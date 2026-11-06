@@ -509,9 +509,12 @@ pub fn cursor_bar() -> f32 {
 pub fn treev_layout(root: &Node) -> LayoutResult {
     // geometry.c treev_init / treev_arrange / treev_build_dir.
     // A directory is an arc. Files and collapsed folders stand on it in rows.
-    // Expanded folders become the next arc out, joined by a dark red branch.
-    const SPACING_D: f64 = 2048.0;
-    const BRANCH: f64 = 256.0;
+    // Expanded folders become the next arc out, joined by a thin branch.
+    // Original spacing is tighter (leaf pitch 1.5*edge, branch as wide as a
+    // block, radial gap 2048). Those read as a packed road on a modern
+    // directory, so the pitch, the gap and the line are opened up a bit.
+    const SPACING_D: f64 = 3072.0;
+    const BRANCH: f64 = 48.0;
     const MIN_CORE: f64 = 8192.0;
     const GROW: f64 = 1.25;
     const MIN_ARC: f64 = 90.0;
@@ -519,7 +522,6 @@ pub fn treev_layout(root: &Node) -> LayoutResult {
 
     let mut core = MIN_CORE;
     for _ in 0..24 {
-        // fstree's subtree arc is the root arc, or wider if children spread past it.
         let (arc, _, sub) = tv_measure(root, core + SPACING_D);
         let width = arc.max(sub);
         if width > MAX_ARC {
@@ -547,7 +549,6 @@ pub fn treev_layout(root: &Node) -> LayoutResult {
             &mut arcs,
             &mut max_r,
         );
-        // The core loop, and the stem that reaches the root arc.
         arcs.push(raw_arc(
             core - 0.5 * BRANCH,
             core + 0.5 * BRANCH,
@@ -642,8 +643,8 @@ fn tv_measure(node: &Node, r0: f64) -> (f64, f64, f64) {
     if !node.is_dir() || !node.expanded {
         return (0.0, 0.0, 0.0);
     }
-    let (depth, arc) = tv_reshape(node.children.len(), r0);
-    let child_r = r0 + depth + 2048.0;
+    let (depth, arc) = tv_fit(node.children.len(), r0);
+    let child_r = r0 + depth + SPACING_D;
     let mut sub = 0.0;
     for child in &node.children {
         if child.is_dir() && child.expanded {
@@ -654,25 +655,49 @@ fn tv_measure(node: &Node, r0: f64) -> (f64, f64, f64) {
     (arc, depth, sub)
 }
 
+/// Nominal arc from the original cubic, then a depth that actually covers the rows.
+fn tv_fit(n_children: usize, r0: f64) -> (f64, f64) {
+    let (_, arc) = tv_reshape(n_children, r0);
+    let depth = tv_rows_depth(n_children, r0, arc);
+    (depth, arc)
+}
+
 fn tv_reshape(n_children: usize, r0: f64) -> (f64, f64) {
-    const LEAF: f64 = 256.0;
-    const W: f64 = 512.0;
     const PI: f64 = std::f64::consts::PI;
-    let edge05 = 0.5 * LEAF;
-    let edge15 = 1.5 * LEAF;
     let n = n_children.max(1) as f64;
-    let k = edge15 * n.sqrt().ceil() + edge05;
+    let k = PITCH * n.sqrt().ceil() + EDGE05;
     let area = k * k;
-    let mut d = tv_depth(area, r0, W);
+    let mut d = tv_depth(area, r0, SPACING_W);
     if !d.is_finite() || d <= 0.0 {
-        d = edge15;
+        d = PITCH;
     }
     let mut depth = d;
-    let frac = (depth - edge05).rem_euclid(edge15);
-    depth += (edge15 - frac) + edge05;
-    let theta = 180.0 * (d + W) / (PI * (r0 + d));
-    let min_arc = (180.0 * (2.0 * LEAF + W) / PI) / r0.max(1.0);
+    let frac = (depth - EDGE05).rem_euclid(PITCH);
+    depth += (PITCH - frac) + EDGE05;
+    let theta = 180.0 * (d + SPACING_W) / (PI * (r0 + d));
+    let min_arc = (180.0 * (2.0 * PITCH) / PI) / r0.max(1.0);
     (depth, theta.max(min_arc))
+}
+
+/// Same final depth as treev_build_dir: lay the rows, then step back half a block.
+fn tv_rows_depth(n: usize, r0: f64, arc_deg: f64) -> f64 {
+    const PI: f64 = std::f64::consts::PI;
+    if n == 0 {
+        return PITCH;
+    }
+    let mut remaining = n;
+    let mut pos_r = r0 + LEAF;
+    while remaining > 0 {
+        let arc_len = (PI / 180.0) * pos_r * arc_deg - SPACING_W;
+        let mut row_n = ((arc_len - EDGE05) / PITCH).floor() as isize;
+        if row_n < 1 {
+            row_n = 1;
+        }
+        let take = (row_n as usize).min(remaining);
+        remaining -= take;
+        pos_r += PITCH;
+    }
+    (pos_r - EDGE05 - r0).max(PITCH)
 }
 
 /// Positive root of the platform cubic in treev_reshape_platform.
@@ -718,24 +743,20 @@ fn tv_emit(
     arcs: &mut Vec<ArcGeom>,
     max_r: &mut f64,
 ) {
-    const LEAF: f64 = 256.0;
-    const SPACING_W: f64 = 512.0;
-    const SPACING_D: f64 = 2048.0;
-    const BRANCH: f64 = 256.0;
+    const BRANCH: f64 = 48.0;
     const PLATFORM_H: f64 = 158.2;
     const PI: f64 = std::f64::consts::PI;
-    let edge05 = 0.5 * LEAF;
-    let edge15 = 1.5 * LEAF;
 
-    let (depth, arc) = tv_reshape(node.children.len(), r0);
+    let (depth, arc) = tv_fit(node.children.len(), r0);
     let half = 0.5 * arc;
-    // Keep a gap of SPACING_W between neighbouring arcs.
-    let inset = ((180.0 * 0.5 * SPACING_W / PI) / r0.max(1.0)).min(half * 0.4);
+    // Nominal arc already leaves SPACING_W out of the leaf rows. Flare the
+    // slab a little past that so the end cubes are not sitting on the rim.
+    let flare = (180.0 * (0.5 * LEAF) / PI) / r0.max(1.0);
     arcs.push(raw_arc(
         r0,
         r0 + depth,
-        abs_deg - half + inset,
-        abs_deg + half - inset,
+        abs_deg - half - flare,
+        abs_deg + half + flare,
         z0,
         PLATFORM_H,
         node,
@@ -744,19 +765,18 @@ fn tv_emit(
     ));
     *max_r = max_r.max(r0 + depth);
 
-    // Rows of children, inner edge outward, last child first. Same as treev_build_dir.
     let mut remaining = node.children.len();
     let mut pos_r = r0 + LEAF;
     let mut idx = node.children.len();
     while idx > 0 {
         let arc_len = (PI / 180.0) * pos_r * arc - SPACING_W;
-        let mut row_n = ((arc_len - edge05) / edge15).floor() as isize;
+        let mut row_n = ((arc_len - EDGE05) / PITCH).floor() as isize;
         if row_n < 1 {
             row_n = 1;
         }
         let row_n = row_n as usize;
         let take = row_n.min(remaining);
-        let inter = (180.0 * edge15 / PI) / pos_r;
+        let inter = (180.0 * PITCH / PI) / pos_r;
         let mut theta = 0.5 * inter * (take as f64 - 1.0);
         for _ in 0..take {
             idx -= 1;
@@ -775,7 +795,7 @@ fn tv_emit(
             theta -= inter;
         }
         remaining = remaining.saturating_sub(row_n);
-        pos_r += edge15;
+        pos_r += PITCH;
         if remaining == 0 {
             break;
         }
@@ -814,7 +834,6 @@ fn tv_emit(
             max_r,
         );
     }
-    // Branch leaving this platform toward its expanded children.
     if let (Some(a), Some(b)) = (first, last) {
         let r1 = r0 + depth;
         let mid_r = r1 + 0.5 * SPACING_D;
@@ -830,11 +849,13 @@ fn tv_emit(
             true,
             false,
         ));
+        // The arc ribbon is only as wide as the line, not a whole block.
+        let pad = tv_half_deg(BRANCH, mid_r);
         arcs.push(raw_arc(
             mid_r - 0.5 * BRANCH,
             mid_r + 0.5 * BRANCH,
-            abs_deg + a.min(b).min(0.0),
-            abs_deg + a.max(b).max(0.0),
+            abs_deg + a.min(b).min(0.0) - pad,
+            abs_deg + a.max(b).max(0.0) + pad,
             z0,
             8.0,
             node,
@@ -844,6 +865,12 @@ fn tv_emit(
     }
 }
 
+const LEAF: f64 = 256.0;
+const EDGE05: f64 = 0.5 * LEAF;
+/// Center-to-center. Original treev_build_dir uses 1.5 * leaf (a half-block gap).
+const PITCH: f64 = 2.0 * LEAF;
+const SPACING_W: f64 = 512.0;
+const SPACING_D: f64 = 3072.0;
 
 fn tv_leaf_height(node: &Node) -> f64 {
     const EDGE: f64 = 256.0;
