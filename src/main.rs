@@ -1,5 +1,6 @@
 mod node;
 mod scan;
+mod layout;
 
 use std::path::PathBuf;
 use clap::Parser;
@@ -17,6 +18,9 @@ struct Args {
     print: bool,
 }
 
+#[derive(Resource)]
+struct Layout(Vec<layout::BoxGeom>);
+
 fn main() {
     let args = Args::parse();
 
@@ -27,9 +31,11 @@ fn main() {
                 return;
             }
 
-            // Phase 0: just open an empty Bevy window for now
+            let boxes = layout::mapv_layout(&root);
+
             App::new()
                 .add_plugins(DefaultPlugins)
+                .insert_resource(Layout(boxes))
                 .add_systems(Startup, setup)
                 .run();
         }
@@ -40,9 +46,41 @@ fn main() {
     }
 }
 
-fn setup(mut commands: Commands) {
-    commands.spawn(Camera2d::default());
-    // empty for Phase 0
+fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    layout: Res<Layout>,
+) {
+    // Camera
+    commands.spawn((Camera3d::default(), Transform::from_xyz(0.0, 8.0, 12.0).looking_at(Vec3::ZERO, Vec3::Y)));
+
+    // Light
+    commands.spawn(DirectionalLight {
+        illuminance: 10_000.0,
+        ..default()
+    });
+
+    let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
+
+    for geom in &layout.0 {
+        let color = match geom.kind {
+            node::NodeType::Directory => Color::srgb(0.2, 0.5, 0.9),
+            node::NodeType::File => Color::srgb(0.7, 0.7, 0.3),
+            node::NodeType::Symlink => Color::srgb(0.9, 0.4, 0.7),
+            node::NodeType::Other => Color::srgb(0.5, 0.5, 0.5),
+        };
+
+        commands.spawn((
+            Mesh3d(cube.clone()),
+            MeshMaterial3d(materials.add(color)),
+            Transform {
+                translation: Vec3::new(geom.x, geom.z, geom.y),
+                scale: Vec3::new(geom.width, geom.height, geom.depth),
+                ..default()
+            },
+        ));
+    }
 }
 
 fn print_tree(node: &node::Node, depth: usize) {
@@ -53,7 +91,6 @@ fn print_tree(node: &node::Node, depth: usize) {
         node::NodeType::Symlink => "link",
         node::NodeType::Other => "other",
     };
-    // Reference path and expanded so the fields aren't dead in Phase 0
     let _ = (&node.path, node.expanded);
     println!(
         "{}{} [{}] size={} subtree={}",
