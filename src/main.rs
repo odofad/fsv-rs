@@ -4,6 +4,7 @@ mod layout;
 
 use std::path::{PathBuf, Path};
 use clap::Parser;
+use bevy::input::mouse::MouseScrollUnit;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
@@ -133,19 +134,27 @@ fn orbit_camera(
         delta += ev.delta;
     }
 
-    if buttons.pressed(MouseButton::Left) {
+    // Middle button orbits. Left click opens a directory.
+    if buttons.pressed(MouseButton::Middle) {
         orbit.yaw -= delta.x * 0.005;
         orbit.pitch = (orbit.pitch - delta.y * 0.005).clamp(-1.2, 1.45);
     }
 
-    if buttons.pressed(MouseButton::Right) || buttons.pressed(MouseButton::Middle) {
+    // Right button slides the view.
+    if buttons.pressed(MouseButton::Right) {
         let right = transform.right();
         let up = transform.up();
-        orbit.focus += (-right * delta.x + up * delta.y) * 0.02;
+        let pan = orbit.distance * 0.0016;
+        orbit.focus += (-right * delta.x + up * delta.y) * pan;
     }
 
     for ev in scroll.read() {
-        orbit.distance = (orbit.distance - ev.y * 1.6).clamp(2.0, 120.0);
+        let ticks = match ev.unit {
+            MouseScrollUnit::Line => ev.y,
+            MouseScrollUnit::Pixel => ev.y / 60.0,
+        };
+        let zoom = ticks * orbit.distance * 0.12;
+        orbit.distance = (orbit.distance - zoom).clamp(1.5, 400.0);
     }
 
     let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, orbit.pitch, 0.0);
