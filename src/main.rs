@@ -336,7 +336,7 @@ fn spawn_geometry(
         let mut color = color_for_kind(&geom.kind);
         if geom.floor {
             let [r, g, b, a] = color.to_srgba().to_f32_array();
-            color = Color::srgba(r * 0.28, g * 0.28, b * 0.28, a);
+            color = Color::srgba(r * 0.12, g * 0.12, b * 0.12, a);
         }
 
         let mesh = meshes.add(slanted_box(geom.slant_x, geom.slant_y));
