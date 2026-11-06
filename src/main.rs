@@ -389,7 +389,7 @@ fn spawn_geometry(
     }
 
     for arc in result.arcs {
-        spawn_arc(commands, &mut meshes, &mut materials, &arc);
+        spawn_arc(commands, meshes, materials, &arc);
     }
 }
 
