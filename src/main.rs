@@ -16,6 +16,10 @@ struct Args {
     /// Print the tree and exit (no window)
     #[arg(long)]
     print: bool,
+
+    /// Use TreeV (radial) layout instead of MapV
+    #[arg(long)]
+    treev: bool,
 }
 
 #[derive(Resource)]
@@ -31,7 +35,12 @@ fn main() {
                 return;
             }
 
-            let boxes = layout::mapv_layout(&root);
+            let mode = if args.treev {
+                layout::LayoutMode::TreeV
+            } else {
+                layout::LayoutMode::MapV
+            };
+            let boxes = layout::layout(&root, mode);
 
             App::new()
                 .add_plugins(DefaultPlugins)
@@ -52,13 +61,11 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
     layout: Res<Layout>,
 ) {
-    // Camera looking at the origin from a sensible distance
     commands.spawn((
         Camera3d::default(),
         Transform::from_xyz(0.0, 12.0, 18.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
-    // Light
     commands.spawn((DirectionalLight {
         illuminance: 15_000.0,
         ..default()
@@ -67,7 +74,7 @@ fn setup(
     let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
 
     for geom in &layout.0 {
-        let _ = &geom.name; // silence unused warning for now
+        let _ = &geom.name;
         let color = match geom.kind {
             node::NodeType::Directory => Color::srgb(0.2, 0.5, 0.9),
             node::NodeType::File => Color::srgb(0.8, 0.7, 0.2),
