@@ -81,21 +81,21 @@ fn setup(
 ) {
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(0.0, 12.0, 18.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(0.0, 14.0, 22.0).looking_at(Vec3::ZERO, Vec3::Y),
         OrbitCamera {
-            yaw: 0.6,
-            pitch: 0.5,
-            distance: 20.0,
+            yaw: 0.5,
+            pitch: 0.6,
+            distance: 24.0,
             focus: Vec3::ZERO,
         },
     ));
 
     commands.spawn((DirectionalLight {
-        illuminance: 15_000.0,
+        illuminance: 18_000.0,
         ..default()
-    }, Transform::from_xyz(4.0, 8.0, 4.0)));
+    }, Transform::from_xyz(6.0, 12.0, 6.0)));
 
-    spawn_boxes(&mut commands, &state, &mut meshes, &mut materials);
+    spawn_geometry(&mut commands, &state, &mut meshes, &mut materials);
 }
 
 fn orbit_camera(
@@ -124,11 +124,11 @@ fn orbit_camera(
     if buttons.pressed(MouseButton::Right) || buttons.pressed(MouseButton::Middle) {
         let right = transform.right();
         let up = transform.up();
-        orbit.focus += (-right * delta.x + up * delta.y) * 0.02;
+        orbit.focus += (-right * delta.x + up * delta.y) * 0.025;
     }
 
     for ev in scroll.read() {
-        orbit.distance = (orbit.distance - ev.y * 1.5).clamp(2.0, 80.0);
+        orbit.distance = (orbit.distance - ev.y * 1.8).clamp(3.0, 100.0);
     }
 
     let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, orbit.pitch, 0.0);
@@ -137,28 +137,32 @@ fn orbit_camera(
     transform.look_at(orbit.focus, Vec3::Y);
 }
 
-fn spawn_boxes(
+fn spawn_geometry(
     commands: &mut Commands,
     state: &AppState,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
 ) {
-    let boxes = layout::layout(&state.root, state.mode);
+    let result = layout::layout(&state.root, state.mode);
     let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
+    let line_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.7, 0.7, 0.8),
+        unlit: true,
+        ..default()
+    });
 
-    for geom in boxes {
+    for geom in result.boxes {
         let mut color = color_for_kind(&geom.kind);
-
         if geom.is_base {
             let [r, g, b, a] = color.to_srgba().to_f32_array();
-            color = Color::srgba(r * 0.55, g * 0.55, b * 0.55, a);
+            color = Color::srgba(r * 0.5, g * 0.5, b * 0.5, a);
         }
 
         commands.spawn((
             Mesh3d(cube.clone()),
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: color,
-                perceptual_roughness: 0.55,
+                perceptual_roughness: 0.5,
                 ..default()
             })),
             Transform {
@@ -169,38 +173,54 @@ fn spawn_boxes(
             Pickable { path: geom.path.clone() },
         ));
 
-        // Simple label above the block (only for non-tiny ones)
-        if geom.width > 0.4 && geom.depth > 0.4 && !geom.name.is_empty() {
-            let label = if geom.name.len() > 16 {
-                format!("{}...", &geom.name[..13])
+        if !geom.is_base && geom.width > 0.5 && geom.depth > 0.5 && !geom.name.is_empty() {
+            let label = if geom.name.len() > 14 {
+                format!("{}...", &geom.name[..11])
             } else {
                 geom.name.clone()
             };
-
             commands.spawn((
                 Text2d::new(label),
-                TextFont {
-                    font_size: 24.0,
-                    ..default()
-                },
+                TextFont { font_size: 28.0, ..default() },
                 TextColor(Color::WHITE),
                 Transform {
-                    translation: Vec3::new(geom.x, geom.z + geom.height * 0.6 + 0.15, geom.y),
+                    translation: Vec3::new(geom.x, geom.z + geom.height * 0.55 + 0.2, geom.y),
                     rotation: Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
-                    scale: Vec3::splat(0.015),
+                    scale: Vec3::splat(0.018),
                     ..default()
                 },
             ));
         }
     }
+
+    // Connecting lines (simple thin cubes for now)
+    for line in result.lines {
+        let from = Vec3::new(line.from[0], line.from[1], line.from[2]);
+        let to = Vec3::new(line.to[0], line.to[1], line.to[2]);
+        let mid = (from + to) * 0.5;
+        let dir = to - from;
+        let len = dir.length().max(0.01);
+        let rot = Quat::from_rotation_arc(Vec3::Y, dir.normalize_or_zero());
+
+        commands.spawn((
+            Mesh3d(cube.clone()),
+            MeshMaterial3d(line_mat.clone()),
+            Transform {
+                translation: mid,
+                rotation: rot,
+                scale: Vec3::new(0.02, len, 0.02),
+                ..default()
+            },
+        ));
+    }
 }
 
 fn color_for_kind(kind: &node::NodeType) -> Color {
     match kind {
-        node::NodeType::Directory => Color::srgb(0.25, 0.55, 0.95),
-        node::NodeType::File => Color::srgb(0.85, 0.75, 0.25),
-        node::NodeType::Symlink => Color::srgb(0.95, 0.45, 0.75),
-        node::NodeType::Other => Color::srgb(0.55, 0.55, 0.55),
+        node::NodeType::Directory => Color::srgb(0.3, 0.6, 1.0),
+        node::NodeType::File => Color::srgb(0.9, 0.8, 0.3),
+        node::NodeType::Symlink => Color::srgb(1.0, 0.5, 0.8),
+        node::NodeType::Other => Color::srgb(0.6, 0.6, 0.6),
     }
 }
 
@@ -295,7 +315,7 @@ fn rebuild_layout(
     for e in &labels {
         commands.entity(e).despawn();
     }
-    spawn_boxes(&mut commands, &state, &mut meshes, &mut materials);
+    spawn_geometry(&mut commands, &state, &mut meshes, &mut materials);
 }
 
 fn side_panel(
