@@ -5,6 +5,7 @@ mod layout;
 use std::path::{PathBuf, Path};
 use clap::Parser;
 use bevy::prelude::*;
+use bevy_egui::{egui, EguiContexts, EguiPlugin};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -21,6 +22,7 @@ struct Args {
 struct AppState {
     root: node::Node,
     mode: layout::LayoutMode,
+    selected: Option<PathBuf>,
 }
 
 #[derive(Component)]
@@ -46,9 +48,14 @@ fn main() {
 
             App::new()
                 .add_plugins(DefaultPlugins)
-                .insert_resource(AppState { root, mode })
+                .add_plugins(EguiPlugin)
+                .insert_resource(AppState {
+                    root,
+                    mode,
+                    selected: None,
+                })
                 .add_systems(Startup, setup)
-                .add_systems(Update, (click_expand, rebuild_layout))
+                .add_systems(Update, (click_expand, rebuild_layout, side_panel))
                 .run();
         }
         Err(e) => {
@@ -116,7 +123,12 @@ fn click_expand(
     cameras: Query<(&Camera, &GlobalTransform)>,
     pickables: Query<(&Pickable, &Transform)>,
     mut state: ResMut<AppState>,
+    mut egui: EguiContexts,
 ) {
+    if egui.ctx_mut().is_pointer_over_area() {
+        return;
+    }
+
     if !buttons.just_pressed(MouseButton::Left) {
         return;
     }
@@ -140,6 +152,7 @@ fn click_expand(
     }
 
     if let Some((_, path)) = best {
+        state.selected = Some(path.clone());
         toggle_expanded(&mut state.root, &path);
     }
 }
@@ -192,6 +205,55 @@ fn rebuild_layout(
         commands.entity(e).despawn();
     }
     spawn_boxes(&mut commands, &state, &mut meshes, &mut materials);
+}
+
+fn side_panel(
+    mut contexts: EguiContexts,
+    mut state: ResMut<AppState>,
+) {
+    egui::SidePanel::left("tree_panel").show(contexts.ctx_mut(), |ui| {
+        ui.heading("fsv-rs");
+        ui.separator();
+
+        let mode_label = match state.mode {
+            layout::LayoutMode::MapV => "MapV",
+            layout::LayoutMode::TreeV => "TreeV",
+        };
+        ui.label(format!("Mode: {}", mode_label));
+
+        if ui.button("Toggle MapV / TreeV").clicked() {
+            state.mode = match state.mode {
+                layout::LayoutMode::MapV => layout::LayoutMode::TreeV,
+                layout::LayoutMode::TreeV => layout::LayoutMode::MapV,
+            };
+        }
+
+        ui.separator();
+        ui.label("Tree");
+
+        // Simple recursive tree display
+        show_node(ui, &mut state.root, 0);
+    });
+}
+
+fn show_node(ui: &mut egui::Ui, node: &mut node::Node, depth: usize) {
+    let indent = "  ".repeat(depth);
+    let marker = if node.is_dir() {
+        if node.expanded { "[-]" } else { "[+]" }
+    } else {
+        "   "
+    };
+
+    let label = format!("{}{} {}", indent, marker, node.name);
+    if ui.button(label).clicked() && node.is_dir() {
+        node.expanded = !node.expanded;
+    }
+
+    if node.expanded {
+        for child in &mut node.children {
+            show_node(ui, child, depth + 1);
+        }
+    }
 }
 
 fn print_tree(node: &node::Node, depth: usize) {
