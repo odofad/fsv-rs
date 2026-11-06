@@ -65,8 +65,8 @@ fn layout_recursive(
     }
 
     let rel = (node.subtree_size.max(1) as f32 / parent_total.max(1.0)).clamp(0.0, 1.0);
-    let base = if node.is_dir() { 0.15 } else { 0.06 };
-    let height = base + rel * 0.25;
+    let base = if node.is_dir() { 0.12 } else { 0.05 };
+    let height = base + rel * 0.18;
 
     out.push(BoxGeom {
         x: x + width / 2.0,
@@ -85,64 +85,72 @@ fn layout_recursive(
     }
 
     let total = node.subtree_size.max(1) as f32;
-    let pad = 0.04;
+    let pad = 0.03;
     let inner_x = x + pad;
     let inner_y = y + pad;
     let inner_w = (width - 2.0 * pad).max(0.1);
     let inner_d = (depth - 2.0 * pad).max(0.1);
 
+    // Squarified-style: prefer shorter side for rows
     let mut remaining = node.children.as_slice();
+    let mut cursor_x = inner_x;
     let mut cursor_y = inner_y;
-    let mut remaining_d = inner_d;
+    let mut remain_w = inner_w;
+    let mut remain_d = inner_d;
+    let mut horizontal = remain_w >= remain_d;
 
-    while !remaining.is_empty() && remaining_d > 0.1 {
-        let mut row_area = 0.0f32;
-        let mut row_count = 0;
+    while !remaining.is_empty() && remain_w > 0.05 && remain_d > 0.05 {
+        let side = if horizontal { remain_w } else { remain_d };
+        let other = if horizontal { remain_d } else { remain_w };
+
+        // Take children until aspect gets worse
+        let mut best_count = 1;
         let mut best_aspect = f32::MAX;
+        let mut accum = 0.0f32;
 
         for i in 1..=remaining.len() {
-            let area: f32 = remaining[..i]
-                .iter()
-                .map(|c| (c.subtree_size.max(1) as f32) / total * inner_w * inner_d)
-                .sum();
-            let row_d = (area / inner_w).max(0.1);
-            let aspect = (inner_w / (area / row_d)).max(row_d / inner_w);
-            if aspect < best_aspect || row_count == 0 {
+            accum += (remaining[i - 1].subtree_size.max(1) as f32) / total;
+            let area = accum * remain_w * remain_d;
+            let row_thick = (area / side).max(0.05);
+            let aspect = (side / row_thick).max(row_thick / side);
+            if aspect < best_aspect {
                 best_aspect = aspect;
-                row_area = area;
-                row_count = i;
-            } else {
+                best_count = i;
+            } else if i > 2 {
                 break;
             }
         }
 
-        row_count = row_count.max(1);
-        let row = &remaining[..row_count];
-        let row_d = (row_area / inner_w).min(remaining_d).max(0.1);
+        let row = &remaining[..best_count];
+        let row_frac: f32 = row.iter().map(|c| (c.subtree_size.max(1) as f32) / total).sum();
+        let row_area = row_frac * remain_w * remain_d;
+        let thick = (row_area / side).min(other).max(0.05);
 
-        let mut cursor_x = inner_x;
+        let mut along = 0.0f32;
         for child in row {
             let frac = (child.subtree_size.max(1) as f32) / total;
-            let child_area = frac * inner_w * inner_d;
-            let child_w = (child_area / row_d).max(0.08);
+            let child_len = (frac / row_frac.max(0.0001) * side).max(0.05);
 
-            layout_recursive(
-                child,
-                cursor_x,
-                cursor_y,
-                child_w.min(inner_w - (cursor_x - inner_x)),
-                row_d,
-                z + height,
-                total,
-                out,
-            );
+            let (cx, cy, cw, cd) = if horizontal {
+                (cursor_x + along, cursor_y, child_len, thick)
+            } else {
+                (cursor_x, cursor_y + along, thick, child_len)
+            };
 
-            cursor_x += child_w;
+            layout_recursive(child, cx, cy, cw, cd, z + height, total, out);
+            along += child_len;
         }
 
-        cursor_y += row_d;
-        remaining_d -= row_d;
-        remaining = &remaining[row_count..];
+        if horizontal {
+            cursor_y += thick;
+            remain_d -= thick;
+        } else {
+            cursor_x += thick;
+            remain_w -= thick;
+        }
+
+        remaining = &remaining[best_count..];
+        horizontal = remain_w >= remain_d;
     }
 }
 
