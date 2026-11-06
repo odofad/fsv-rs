@@ -30,6 +30,14 @@ struct Pickable {
     path: PathBuf,
 }
 
+#[derive(Component)]
+struct OrbitCamera {
+    yaw: f32,
+    pitch: f32,
+    distance: f32,
+    focus: Vec3,
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -55,7 +63,7 @@ fn main() {
                     selected: None,
                 })
                 .add_systems(Startup, setup)
-                .add_systems(Update, (click_expand, rebuild_layout, side_panel))
+                .add_systems(Update, (orbit_camera, click_expand, rebuild_layout, side_panel))
                 .run();
         }
         Err(e) => {
@@ -74,6 +82,12 @@ fn setup(
     commands.spawn((
         Camera3d::default(),
         Transform::from_xyz(0.0, 12.0, 18.0).looking_at(Vec3::ZERO, Vec3::Y),
+        OrbitCamera {
+            yaw: 0.6,
+            pitch: 0.5,
+            distance: 20.0,
+            focus: Vec3::ZERO,
+        },
     ));
 
     commands.spawn((DirectionalLight {
@@ -82,6 +96,45 @@ fn setup(
     }, Transform::from_xyz(4.0, 8.0, 4.0)));
 
     spawn_boxes(&mut commands, &state, &mut meshes, &mut materials);
+}
+
+fn orbit_camera(
+    mut cameras: Query<(&mut Transform, &mut OrbitCamera)>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    mut scroll: EventReader<bevy::input::mouse::MouseWheel>,
+    mut motion: EventReader<bevy::input::mouse::MouseMotion>,
+    mut egui: EguiContexts,
+) {
+    if egui.ctx_mut().is_pointer_over_area() {
+        return;
+    }
+
+    let Ok((mut transform, mut orbit)) = cameras.get_single_mut() else { return; };
+
+    let mut delta = Vec2::ZERO;
+    for ev in motion.read() {
+        delta += ev.delta;
+    }
+
+    if buttons.pressed(MouseButton::Left) {
+        orbit.yaw -= delta.x * 0.005;
+        orbit.pitch = (orbit.pitch - delta.y * 0.005).clamp(-1.4, 1.4);
+    }
+
+    if buttons.pressed(MouseButton::Right) || buttons.pressed(MouseButton::Middle) {
+        let right = transform.right();
+        let up = transform.up();
+        orbit.focus += (-right * delta.x + up * delta.y) * 0.02;
+    }
+
+    for ev in scroll.read() {
+        orbit.distance = (orbit.distance - ev.y * 1.5).clamp(2.0, 80.0);
+    }
+
+    let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, orbit.pitch, 0.0);
+    let offset = rot * Vec3::new(0.0, 0.0, orbit.distance);
+    transform.translation = orbit.focus + offset;
+    transform.look_at(orbit.focus, Vec3::Y);
 }
 
 fn spawn_boxes(
@@ -134,6 +187,7 @@ fn click_expand(
         return;
     }
 
+    // Only expand on click if we didn't drag much (simple check: just pressed)
     if !buttons.just_pressed(MouseButton::Left) {
         return;
     }
