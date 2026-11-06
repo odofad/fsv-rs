@@ -31,6 +31,9 @@ struct Pickable {
 }
 
 #[derive(Component)]
+struct MapPiece;
+
+#[derive(Component)]
 struct OrbitCamera {
     yaw: f32,
     pitch: f32,
@@ -81,19 +84,26 @@ fn setup(
 ) {
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(0.0, 14.0, 22.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(0.0, 22.0, 26.0).looking_at(Vec3::ZERO, Vec3::Y),
         OrbitCamera {
-            yaw: 0.5,
-            pitch: 0.6,
-            distance: 24.0,
+            yaw: 0.35,
+            pitch: 0.95,
+            distance: 32.0,
             focus: Vec3::ZERO,
         },
     ));
 
     commands.spawn((DirectionalLight {
-        illuminance: 18_000.0,
+        illuminance: 22_000.0,
+        shadows_enabled: false,
         ..default()
-    }, Transform::from_xyz(6.0, 12.0, 6.0)));
+    }, Transform::from_xyz(8.0, 24.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y)));
+
+    commands.insert_resource(AmbientLight {
+        color: Color::WHITE,
+        brightness: 400.0,
+        ..default()
+    });
 
     spawn_geometry(&mut commands, &state, &mut meshes, &mut materials);
 }
@@ -118,17 +128,17 @@ fn orbit_camera(
 
     if buttons.pressed(MouseButton::Left) {
         orbit.yaw -= delta.x * 0.005;
-        orbit.pitch = (orbit.pitch - delta.y * 0.005).clamp(-1.4, 1.4);
+        orbit.pitch = (orbit.pitch - delta.y * 0.005).clamp(-1.2, 1.45);
     }
 
     if buttons.pressed(MouseButton::Right) || buttons.pressed(MouseButton::Middle) {
         let right = transform.right();
         let up = transform.up();
-        orbit.focus += (-right * delta.x + up * delta.y) * 0.025;
+        orbit.focus += (-right * delta.x + up * delta.y) * 0.02;
     }
 
     for ev in scroll.read() {
-        orbit.distance = (orbit.distance - ev.y * 1.8).clamp(3.0, 100.0);
+        orbit.distance = (orbit.distance - ev.y * 1.6).clamp(2.0, 120.0);
     }
 
     let rot = Quat::from_euler(EulerRot::YXZ, orbit.yaw, orbit.pitch, 0.0);
@@ -146,7 +156,7 @@ fn spawn_geometry(
     let result = layout::layout(&state.root, state.mode);
     let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
     let line_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.7, 0.7, 0.8),
+        base_color: Color::srgb(0.75, 0.78, 0.85),
         unlit: true,
         ..default()
     });
@@ -155,14 +165,14 @@ fn spawn_geometry(
         let mut color = color_for_kind(&geom.kind);
         if geom.is_base {
             let [r, g, b, a] = color.to_srgba().to_f32_array();
-            color = Color::srgba(r * 0.5, g * 0.5, b * 0.5, a);
+            color = Color::srgba(r * 0.45, g * 0.45, b * 0.45, a);
         }
 
         commands.spawn((
             Mesh3d(cube.clone()),
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: color,
-                perceptual_roughness: 0.5,
+                perceptual_roughness: 0.55,
                 ..default()
             })),
             Transform {
@@ -171,9 +181,10 @@ fn spawn_geometry(
                 ..default()
             },
             Pickable { path: geom.path.clone() },
+            MapPiece,
         ));
 
-        if !geom.is_base && geom.width > 0.5 && geom.depth > 0.5 && !geom.name.is_empty() {
+        if !geom.is_base && geom.width > 0.4 && geom.depth > 0.4 && !geom.name.is_empty() {
             let label = if geom.name.len() > 14 {
                 format!("{}...", &geom.name[..11])
             } else {
@@ -184,16 +195,16 @@ fn spawn_geometry(
                 TextFont { font_size: 28.0, ..default() },
                 TextColor(Color::WHITE),
                 Transform {
-                    translation: Vec3::new(geom.x, geom.z + geom.height * 0.55 + 0.2, geom.y),
+                    translation: Vec3::new(geom.x, geom.z + geom.height * 0.55 + 0.08, geom.y),
                     rotation: Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
-                    scale: Vec3::splat(0.018),
+                    scale: Vec3::splat(0.012),
                     ..default()
                 },
+                MapPiece,
             ));
         }
     }
 
-    // Connecting lines (simple thin cubes for now)
     for line in result.lines {
         let from = Vec3::new(line.from[0], line.from[1], line.from[2]);
         let to = Vec3::new(line.to[0], line.to[1], line.to[2]);
@@ -211,6 +222,7 @@ fn spawn_geometry(
                 scale: Vec3::new(0.02, len, 0.02),
                 ..default()
             },
+            MapPiece,
         ));
     }
 }
@@ -303,16 +315,12 @@ fn rebuild_layout(
     state: Res<AppState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    existing: Query<Entity, With<Pickable>>,
-    labels: Query<Entity, With<Text2d>>,
+    existing: Query<Entity, With<MapPiece>>,
 ) {
     if !state.is_changed() {
         return;
     }
     for e in &existing {
-        commands.entity(e).despawn();
-    }
-    for e in &labels {
         commands.entity(e).despawn();
     }
     spawn_geometry(&mut commands, &state, &mut meshes, &mut materials);
