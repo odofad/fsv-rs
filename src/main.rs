@@ -151,7 +151,8 @@ fn spawn_boxes(
 
         // Bases slightly darker so children stand out
         if geom.is_base {
-            color = color.with_brightness(0.6);
+            let [r, g, b, a] = color.to_srgba().to_f32_array();
+            color = Color::srgba(r * 0.6, g * 0.6, b * 0.6, a);
         }
 
         commands.spawn((
