@@ -58,11 +58,11 @@ pub fn scan(root: &Path) -> Result<Node, std::io::Error> {
         root_node.children.push(child);
     }
 
-    // Sort children: dirs first, then by size descending
-    sort_children(&mut root_node);
-
-    // Compute subtree sizes
+    // Compute subtree sizes first
     compute_subtree_size(&mut root_node);
+
+    // Then sort: dirs first, then by subtree size descending
+    sort_children(&mut root_node);
 
     Ok(root_node)
 }
