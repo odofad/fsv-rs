@@ -67,6 +67,7 @@ pub enum LayoutMode {
 pub struct LayoutResult {
     pub boxes: Vec<BoxGeom>,
     pub lines: Vec<LineGeom>,
+    #[allow(dead_code)]
     pub span: f32,
 }
 
@@ -326,15 +327,27 @@ fn push_box(
     let Some(geom) = node.map else {
         return;
     };
+    // Children are packed into this rectangle. Shrinking an open directory
+    // would leave them hanging off the sides.
+    let open_dir = node.is_dir() && node.expanded;
+    let draw_gap = if is_base || open_dir { 0.0 } else { gap };
+
+    let full_w = geom.c1x - geom.c0x;
+    let full_d = geom.c1y - geom.c0y;
+    let k = side_slant(&node.kind);
+    // Same inset the packer used, in original units. Do not recompute it
+    // from the stretched world height or the top face moves out from under
+    // the children.
+    let slant_x = (geom.height.min(k * full_w) / full_w).clamp(0.0, 0.45) as f32;
+    let slant_y = (geom.height.min(k * full_d) / full_d).clamp(0.0, 0.45) as f32;
+
     let mut c0x = geom.c0x;
     let mut c0y = geom.c0y;
     let mut c1x = geom.c1x;
     let mut c1y = geom.c1y;
-    if !is_base && gap > 0.0 {
-        let w = c1x - c0x;
-        let d = c1y - c0y;
-        let ix = (w * gap * 0.5).min(w * 0.46);
-        let iy = (d * gap * 0.5).min(d * 0.46);
+    if draw_gap > 0.0 {
+        let ix = (full_w * draw_gap * 0.5).min(full_w * 0.46);
+        let iy = (full_d * draw_gap * 0.5).min(full_d * 0.46);
         c0x += ix;
         c1x -= ix;
         c0y += iy;
@@ -345,23 +358,14 @@ fn push_box(
     if w < 1e-6 || d < 1e-6 || geom.height <= 0.0 {
         return;
     }
-    let width = (w * xy) as f32;
-    let depth = (d * xy) as f32;
-    let height = (geom.height * z_scale) as f32;
-    let k = side_slant(&node.kind) as f32;
-    let slant_x = ((k * width).min(height) / width).clamp(0.0, 0.45);
-    let slant_y = ((k * depth).min(height) / depth).clamp(0.0, 0.45);
-    // Same rule as mapv_draw_recursive: a collapsed directory wears the
-    // folder and its own name. An expanded one shows its children, and
-    // only the files among them are labelled.
     let collapsed_dir = node.is_dir() && !node.expanded;
     out.push(BoxGeom {
         x: ((c0x + c1x) * 0.5 * xy) as f32,
         y: ((c0y + c1y) * 0.5 * xy) as f32,
         z: ((z0 + geom.height * 0.5) * z_scale) as f32,
-        width,
-        depth,
-        height,
+        width: (w * xy) as f32,
+        depth: (d * xy) as f32,
+        height: (geom.height * z_scale) as f32,
         kind: node.kind.clone(),
         name: node.name.clone(),
         path: node.path.clone(),
