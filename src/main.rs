@@ -149,11 +149,18 @@ fn spawn_boxes(
     for geom in boxes {
         let color = color_for_kind(&geom.kind);
 
+        // Bases slightly darker so children stand out
+        let base_color = if geom.is_base {
+            color.darker(0.3)
+        } else {
+            color
+        };
+
         commands.spawn((
             Mesh3d(cube.clone()),
             MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: color,
-                perceptual_roughness: 0.7,
+                base_color,
+                perceptual_roughness: 0.6,
                 ..default()
             })),
             Transform {
@@ -187,7 +194,6 @@ fn click_expand(
         return;
     }
 
-    // Only expand on click if we didn't drag much (simple check: just pressed)
     if !buttons.just_pressed(MouseButton::Left) {
         return;
     }
