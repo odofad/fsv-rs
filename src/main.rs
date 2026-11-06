@@ -147,19 +147,17 @@ fn spawn_boxes(
     let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
 
     for geom in boxes {
-        let color = color_for_kind(&geom.kind);
+        let mut color = color_for_kind(&geom.kind);
 
         // Bases slightly darker so children stand out
-        let base_color = if geom.is_base {
-            color.darker(0.3)
-        } else {
-            color
-        };
+        if geom.is_base {
+            color = color.with_brightness(0.6);
+        }
 
         commands.spawn((
             Mesh3d(cube.clone()),
             MeshMaterial3d(materials.add(StandardMaterial {
-                base_color,
+                base_color: color,
                 perceptual_roughness: 0.6,
                 ..default()
             })),
