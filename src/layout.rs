@@ -26,7 +26,8 @@ impl Default for View {
         Self {
             target_width: 20.0,
             min_dir_height: 0.32,
-            gap: 0.40,
+            // Wide streets. A block keeps about a third of its cell.
+            gap: 0.66,
         }
     }
 }
@@ -43,6 +44,8 @@ pub struct BoxGeom {
     pub name: String,
     pub path: std::path::PathBuf,
     pub is_base: bool,
+    /// Expanded directory pad. Drawn dark so the blocks on it read separately.
+    pub floor: bool,
     /// Top-face inset, as a fraction of width and depth. From mapv_side_slant_ratios.
     pub slant_x: f32,
     pub slant_y: f32,
@@ -370,6 +373,7 @@ fn push_box(
         name: node.name.clone(),
         path: node.path.clone(),
         is_base,
+        floor: is_base || open_dir,
         slant_x,
         slant_y,
         folder: collapsed_dir && !is_base,
@@ -452,6 +456,7 @@ fn treev_recursive(
         name: node.name.clone(),
         path: node.path.clone(),
         is_base: node.is_dir(),
+        floor: false,
         slant_x: 0.0,
         slant_y: 0.0,
         folder: false,
