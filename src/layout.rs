@@ -62,7 +62,7 @@ fn layout_recursive(
     is_root: bool,
     out: &mut Vec<BoxGeom>,
 ) {
-    if width < 0.08 || depth < 0.08 {
+    if width < 0.1 || depth < 0.1 {
         return;
     }
 
@@ -71,11 +71,11 @@ fn layout_recursive(
     let is_expanded_dir = node.is_dir() && node.expanded && !node.children.is_empty();
     let is_base = is_root || is_expanded_dir;
 
-    // Thin base for expanded dirs; proper raised height for individual blocks
+    // Very thin bases; individual blocks get real height
     let height = if is_base {
-        0.08
+        0.04
     } else {
-        0.25 + rel * 0.4
+        0.4 + rel * 0.5
     };
 
     out.push(BoxGeom {
@@ -95,12 +95,12 @@ fn layout_recursive(
         return;
     }
 
-    // Cap leaves: only draw the biggest N files + all dirs so it stays readable
+    // Cap leaves for readability
     let mut children: Vec<&Node> = node.children.iter().collect();
     children.sort_by(|a, b| b.subtree_size.cmp(&a.subtree_size));
     let mut visible: Vec<&Node> = Vec::new();
     let mut file_count = 0;
-    const MAX_FILES: usize = 12;
+    const MAX_FILES: usize = 8;
     for c in &children {
         if c.is_dir() {
             visible.push(c);
@@ -109,17 +109,15 @@ fn layout_recursive(
             file_count += 1;
         }
     }
-    // Keep original order roughly by re-sorting visible by original position if needed
-    // For now size order is fine
 
     let total = node.subtree_size.max(1) as f32;
-    let gap = 0.08; // larger gap so blocks stay distinct
+    let gap = 0.12; // bigger gaps
     let inner_x = x + gap;
     let inner_y = y + gap;
-    let inner_w = (width - 2.0 * gap).max(0.1);
-    let inner_d = (depth - 2.0 * gap).max(0.1);
+    let inner_w = (width - 2.0 * gap).max(0.15);
+    let inner_d = (depth - 2.0 * gap).max(0.15);
 
-    let child_z = z + height;
+    let child_z = z + height + 0.02; // sit clearly on top
 
     let mut remaining = visible.as_slice();
     let mut cursor_x = inner_x;
@@ -128,7 +126,7 @@ fn layout_recursive(
     let mut remain_d = inner_d;
     let mut horizontal = remain_w >= remain_d;
 
-    while !remaining.is_empty() && remain_w > 0.06 && remain_d > 0.06 {
+    while !remaining.is_empty() && remain_w > 0.1 && remain_d > 0.1 {
         let side = if horizontal { remain_w } else { remain_d };
         let other = if horizontal { remain_d } else { remain_w };
 
@@ -139,12 +137,12 @@ fn layout_recursive(
         for i in 1..=remaining.len() {
             accum += (remaining[i - 1].subtree_size.max(1) as f32) / total;
             let area = accum * remain_w * remain_d;
-            let row_thick = (area / side).max(0.06);
+            let row_thick = (area / side).max(0.1);
             let aspect = (side / row_thick).max(row_thick / side);
             if aspect < best_aspect {
                 best_aspect = aspect;
                 best_count = i;
-            } else if i > 3 {
+            } else if i > 2 {
                 break;
             }
         }
@@ -152,19 +150,19 @@ fn layout_recursive(
         let row = &remaining[..best_count];
         let row_frac: f32 = row.iter().map(|c| (c.subtree_size.max(1) as f32) / total).sum();
         let row_area = row_frac * remain_w * remain_d;
-        let thick = (row_area / side).min(other).max(0.08);
+        let thick = (row_area / side).min(other).max(0.12);
 
         let mut along = 0.0f32;
         for child in row {
             let frac = (child.subtree_size.max(1) as f32) / total;
-            let child_len = (frac / row_frac.max(0.0001) * side).max(0.08);
+            let child_len = (frac / row_frac.max(0.0001) * side).max(0.12);
 
-            let usable = (child_len - gap).max(0.06);
+            let usable = (child_len - gap).max(0.1);
 
             let (cx, cy, cw, cd) = if horizontal {
-                (cursor_x + along + gap * 0.5, cursor_y, usable, (thick - gap).max(0.06))
+                (cursor_x + along + gap * 0.5, cursor_y, usable, (thick - gap).max(0.1))
             } else {
-                (cursor_x, cursor_y + along + gap * 0.5, (thick - gap).max(0.06), usable)
+                (cursor_x, cursor_y + along + gap * 0.5, (thick - gap).max(0.1), usable)
             };
 
             layout_recursive(child, cx, cy, cw, cd, child_z, total, false, out);
