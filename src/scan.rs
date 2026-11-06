@@ -37,26 +37,34 @@ pub fn scan(root: &Path) -> Result<Node, std::io::Error> {
         nodes.insert(path, node);
     }
 
-    // Nest children under their parents
-    let mut root_node = nodes.remove(root).ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "root not found")
-    })?;
+    // Collect parent -> children relationships first (no overlapping borrows)
+    let mut children_map: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+    let all_paths: Vec<PathBuf> = nodes.keys().cloned().collect();
 
-    let paths: Vec<PathBuf> = nodes.keys().cloned().collect();
-    for path in paths {
+    for path in &all_paths {
         if let Some(parent_path) = path.parent() {
-            if let Some(parent) = nodes.get_mut(parent_path) {
-                if let Some(child) = nodes.remove(&path) {
-                    parent.children.push(child);
-                }
+            if nodes.contains_key(parent_path) {
+                children_map
+                    .entry(parent_path.to_path_buf())
+                    .or_default()
+                    .push(path.clone());
             }
         }
     }
 
-    // Attach any remaining top-level children to root
-    for (_, child) in nodes {
-        root_node.children.push(child);
+    // Build the tree by moving nodes out
+    fn build(path: &Path, nodes: &mut HashMap<PathBuf, Node>, children_map: &HashMap<PathBuf, Vec<PathBuf>>) -> Node {
+        let mut node = nodes.remove(path).expect("node exists");
+        if let Some(child_paths) = children_map.get(path) {
+            for child_path in child_paths {
+                let child = build(child_path, nodes, children_map);
+                node.children.push(child);
+            }
+        }
+        node
     }
+
+    let mut root_node = build(root, &mut nodes, &children_map);
 
     // Compute subtree sizes first
     compute_subtree_size(&mut root_node);
