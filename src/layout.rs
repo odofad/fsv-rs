@@ -12,6 +12,8 @@ pub struct BoxGeom {
     #[allow(dead_code)]
     pub name: String,
     pub path: std::path::PathBuf,
+    /// True if this is a thin base platform (expanded directory)
+    pub is_base: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -44,7 +46,7 @@ pub fn mapv_layout(root: &Node) -> Vec<BoxGeom> {
         root_d,
         0.0,
         root.subtree_size as f32,
-        true, // is root
+        true,
         &mut boxes,
     );
 
@@ -62,17 +64,20 @@ fn layout_recursive(
     is_root: bool,
     out: &mut Vec<BoxGeom>,
 ) {
-    if width < 0.06 || depth < 0.06 {
+    if width < 0.05 || depth < 0.05 {
         return;
     }
 
     let rel = (node.subtree_size.max(1) as f32 / parent_total.max(1.0)).clamp(0.0, 1.0);
 
-    // Parent/root is a thin base; children are the visible blocks
-    let height = if is_root || (node.is_dir() && node.expanded) {
-        0.08
+    let is_expanded_dir = node.is_dir() && node.expanded && !node.children.is_empty();
+    let is_base = is_root || is_expanded_dir;
+
+    // Thin base for expanded dirs / root; normal height for leaves and collapsed
+    let height = if is_base {
+        0.06
     } else {
-        0.12 + rel * 0.25
+        0.15 + rel * 0.3
     };
 
     out.push(BoxGeom {
@@ -85,20 +90,21 @@ fn layout_recursive(
         kind: node.kind.clone(),
         name: node.name.clone(),
         path: node.path.clone(),
+        is_base,
     });
 
-    if !node.is_dir() || !node.expanded || node.children.is_empty() {
+    if !is_expanded_dir {
         return;
     }
 
     let total = node.subtree_size.max(1) as f32;
-    let pad = 0.04;
-    let inner_x = x + pad;
-    let inner_y = y + pad;
-    let inner_w = (width - 2.0 * pad).max(0.08);
-    let inner_d = (depth - 2.0 * pad).max(0.08);
+    let gap = 0.03; // small gap between blocks
+    let inner_x = x + gap;
+    let inner_y = y + gap;
+    let inner_w = (width - 2.0 * gap).max(0.08);
+    let inner_d = (depth - 2.0 * gap).max(0.08);
 
-    // Children sit on top of the base as individual blocks
+    // Children sit on the top of the base
     let child_z = z + height;
 
     let mut remaining = node.children.as_slice();
@@ -108,7 +114,7 @@ fn layout_recursive(
     let mut remain_d = inner_d;
     let mut horizontal = remain_w >= remain_d;
 
-    while !remaining.is_empty() && remain_w > 0.05 && remain_d > 0.05 {
+    while !remaining.is_empty() && remain_w > 0.04 && remain_d > 0.04 {
         let side = if horizontal { remain_w } else { remain_d };
         let other = if horizontal { remain_d } else { remain_w };
 
@@ -119,12 +125,12 @@ fn layout_recursive(
         for i in 1..=remaining.len() {
             accum += (remaining[i - 1].subtree_size.max(1) as f32) / total;
             let area = accum * remain_w * remain_d;
-            let row_thick = (area / side).max(0.05);
+            let row_thick = (area / side).max(0.04);
             let aspect = (side / row_thick).max(row_thick / side);
             if aspect < best_aspect {
                 best_aspect = aspect;
                 best_count = i;
-            } else if i > 3 {
+            } else if i > 4 {
                 break;
             }
         }
@@ -132,17 +138,20 @@ fn layout_recursive(
         let row = &remaining[..best_count];
         let row_frac: f32 = row.iter().map(|c| (c.subtree_size.max(1) as f32) / total).sum();
         let row_area = row_frac * remain_w * remain_d;
-        let thick = (row_area / side).min(other).max(0.05);
+        let thick = (row_area / side).min(other).max(0.04);
 
         let mut along = 0.0f32;
         for child in row {
             let frac = (child.subtree_size.max(1) as f32) / total;
-            let child_len = (frac / row_frac.max(0.0001) * side).max(0.05);
+            let child_len = (frac / row_frac.max(0.0001) * side).max(0.04);
+
+            // Leave a small gap
+            let usable = (child_len - gap).max(0.03);
 
             let (cx, cy, cw, cd) = if horizontal {
-                (cursor_x + along, cursor_y, child_len, thick)
+                (cursor_x + along + gap * 0.5, cursor_y, usable, (thick - gap).max(0.03))
             } else {
-                (cursor_x, cursor_y + along, thick, child_len)
+                (cursor_x, cursor_y + along + gap * 0.5, (thick - gap).max(0.03), usable)
             };
 
             layout_recursive(child, cx, cy, cw, cd, child_z, total, false, out);
@@ -194,6 +203,7 @@ fn treev_recursive(
         kind: node.kind.clone(),
         name: node.name.clone(),
         path: node.path.clone(),
+        is_base: false,
     });
 
     if !node.is_dir() || !node.expanded || node.children.is_empty() {
