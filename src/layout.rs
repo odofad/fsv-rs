@@ -49,10 +49,10 @@ fn layout_recursive(
         return;
     }
 
-    // Height scales with relative size so big nodes stand out
+    // Gentler height scale so big nodes stand out without towers
     let rel = (node.subtree_size.max(1) as f32 / parent_total.max(1.0)).clamp(0.0, 1.0);
-    let base = if node.is_dir() { 0.2 } else { 0.08 };
-    let height = base + rel * 0.8;
+    let base = if node.is_dir() { 0.15 } else { 0.06 };
+    let height = base + rel * 0.25;
 
     out.push(BoxGeom {
         x: x + width / 2.0,
