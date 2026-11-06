@@ -94,17 +94,13 @@ fn spawn_boxes(
     let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
 
     for geom in boxes {
-        let color = match geom.kind {
-            node::NodeType::Directory => Color::srgb(0.2, 0.5, 0.9),
-            node::NodeType::File => Color::srgb(0.8, 0.7, 0.2),
-            node::NodeType::Symlink => Color::srgb(0.9, 0.4, 0.7),
-            node::NodeType::Other => Color::srgb(0.5, 0.5, 0.5),
-        };
+        let color = color_for_kind(&geom.kind);
 
         commands.spawn((
             Mesh3d(cube.clone()),
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: color,
+                perceptual_roughness: 0.7,
                 ..default()
             })),
             Transform {
@@ -114,6 +110,15 @@ fn spawn_boxes(
             },
             Pickable { path: geom.path },
         ));
+    }
+}
+
+fn color_for_kind(kind: &node::NodeType) -> Color {
+    match kind {
+        node::NodeType::Directory => Color::srgb(0.25, 0.55, 0.95),
+        node::NodeType::File => Color::srgb(0.85, 0.75, 0.25),
+        node::NodeType::Symlink => Color::srgb(0.95, 0.45, 0.75),
+        node::NodeType::Other => Color::srgb(0.55, 0.55, 0.55),
     }
 }
 
@@ -231,7 +236,6 @@ fn side_panel(
         ui.separator();
         ui.label("Tree");
 
-        // Simple recursive tree display
         show_node(ui, &mut state.root, 0);
     });
 }
@@ -244,7 +248,9 @@ fn show_node(ui: &mut egui::Ui, node: &mut node::Node, depth: usize) {
         "   "
     };
 
-    let label = format!("{}{} {}", indent, marker, node.name);
+    let size_str = human_size(node.subtree_size);
+    let label = format!("{}{} {}  ({})", indent, marker, node.name, size_str);
+
     if ui.button(label).clicked() && node.is_dir() {
         node.expanded = !node.expanded;
     }
@@ -253,6 +259,21 @@ fn show_node(ui: &mut egui::Ui, node: &mut node::Node, depth: usize) {
         for child in &mut node.children {
             show_node(ui, child, depth + 1);
         }
+    }
+}
+
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{} {}", bytes, UNITS[unit])
+    } else {
+        format!("{:.1} {}", size, UNITS[unit])
     }
 }
 
