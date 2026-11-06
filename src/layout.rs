@@ -844,6 +844,19 @@ fn tv_emit(
     }
 }
 
+
+fn tv_leaf_height(node: &Node) -> f64 {
+    const EDGE: f64 = 256.0;
+    let bytes = represented_bytes(node).max(64.0);
+    let raw = bytes.sqrt();
+    if raw <= EDGE {
+        raw.max(EDGE * 0.15)
+    } else {
+        let doublings = (bytes / (EDGE * EDGE)).ln() / std::f64::consts::LN_2;
+        (EDGE + doublings * EDGE * 0.18).min(EDGE * 2.4)
+    }
+}
+
 fn tv_leaf(
     node: &Node,
     r0: f64,
@@ -856,11 +869,10 @@ fn tv_leaf(
 ) {
     const LEAF: f64 = 256.0;
     let edge = if full { LEAF } else { 0.875 * LEAF };
-    let height = if full {
-        represented_bytes(node).sqrt()
-    } else {
-        LEAF / 64.0
-    };
+    // geometry.c: leaf.height = sqrt(bytes). A 64 KiB file is one leaf
+    // edge tall. Past that, sqrt turns gigabytes into needles, so grow
+    // slowly: a bit under a fifth of an edge per doubling, never past 2.4.
+    let height = if full { tv_leaf_height(node) } else { LEAF / 64.0 };
     let theta = abs_deg.to_radians();
     let r = r0 + dist;
     *max_r = max_r.max(r + 0.5 * edge);
