@@ -25,9 +25,9 @@ impl Default for View {
     fn default() -> Self {
         Self {
             target_width: 20.0,
-            min_dir_height: 0.32,
-            // Wide streets. A block keeps about a third of its cell.
-            gap: 0.66,
+            min_dir_height: 1.15,
+            // A street, not a vacant lot. A block keeps about four fifths of its cell.
+            gap: 0.22,
         }
     }
 }
