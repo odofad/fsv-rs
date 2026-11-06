@@ -10,6 +10,7 @@ pub struct BoxGeom {
     pub height: f32,
     pub kind: NodeType,
     pub name: String,
+    pub path: std::path::PathBuf, // for picking
 }
 
 pub enum LayoutMode {
@@ -74,9 +75,11 @@ fn layout_recursive(
         height,
         kind: node.kind.clone(),
         name: node.name.clone(),
+        path: node.path.clone(),
     });
 
-    if !node.is_dir() || node.children.is_empty() {
+    // Only recurse into children if expanded
+    if !node.is_dir() || !node.expanded || node.children.is_empty() {
         return;
     }
 
@@ -142,15 +145,12 @@ fn layout_recursive(
     }
 }
 
-// ---------- TreeV ----------
-
 pub fn treev_layout(root: &Node) -> Vec<BoxGeom> {
     let mut boxes = Vec::new();
     if root.subtree_size == 0 {
         return boxes;
     }
 
-    // Root platform at origin
     treev_recursive(root, 0.0, 0.0, 0.0, 2.5, 0.0, &mut boxes);
     boxes
 }
@@ -165,9 +165,8 @@ fn treev_recursive(
     out: &mut Vec<BoxGeom>,
 ) {
     let height = if node.is_dir() { 0.2 } else { 0.1 };
-
-    // Platform / leaf as a box for now (radial placement)
     let size = radius * 0.6;
+
     out.push(BoxGeom {
         x: cx,
         y: cy,
@@ -177,9 +176,11 @@ fn treev_recursive(
         height,
         kind: node.kind.clone(),
         name: node.name.clone(),
+        path: node.path.clone(),
     });
 
-    if !node.is_dir() || node.children.is_empty() {
+    // Only show children if expanded
+    if !node.is_dir() || !node.expanded || node.children.is_empty() {
         return;
     }
 
