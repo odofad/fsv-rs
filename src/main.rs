@@ -352,8 +352,8 @@ fn spawn_geometry(
             })),
             Transform {
                 translation,
+                rotation: Quat::from_rotation_y(geom.yaw),
                 scale,
-                ..default()
             },
             Pickable { path: geom.path.clone() },
             MapPiece,
@@ -363,9 +363,12 @@ fn spawn_geometry(
             let pts = layout::folder_outline(geom.slant_x, geom.slant_y);
             let y = translation.y + scale.y * 0.5 + 0.012;
             let thick = (scale.x.min(scale.z) * 0.012).clamp(0.008, 0.04);
+            let yaw_q = Quat::from_rotation_y(geom.yaw);
             for w in pts.windows(2) {
-                let a = Vec3::new(translation.x + w[0][0] * scale.x, y, translation.z + w[0][1] * scale.z);
-                let b = Vec3::new(translation.x + w[1][0] * scale.x, y, translation.z + w[1][1] * scale.z);
+                let la = yaw_q * Vec3::new(w[0][0] * scale.x, 0.0, w[0][1] * scale.z);
+                let lb = yaw_q * Vec3::new(w[1][0] * scale.x, 0.0, w[1][1] * scale.z);
+                let a = Vec3::new(translation.x + la.x, y, translation.z + la.z);
+                let b = Vec3::new(translation.x + lb.x, y, translation.z + lb.z);
                 spawn_segment(commands, cube.clone(), folder_mat.clone(), a, b, thick);
             }
         }
@@ -375,7 +378,7 @@ fn spawn_geometry(
         }
 
         if state.selected.as_ref() == Some(&geom.path) {
-            spawn_cursor(commands, cube.clone(), cursor_mat.clone(), translation, scale);
+            spawn_cursor(commands, cube.clone(), cursor_mat.clone(), translation, scale, geom.yaw);
         }
     }
 
@@ -383,6 +386,10 @@ fn spawn_geometry(
         let from = Vec3::new(line.from[0], line.from[1], line.from[2]);
         let to = Vec3::new(line.to[0], line.to[1], line.to[2]);
         spawn_segment(commands, cube.clone(), line_mat.clone(), from, to, 0.02);
+    }
+
+    for arc in result.arcs {
+        spawn_arc(commands, &mut meshes, &mut materials, &arc);
     }
 }
 
@@ -480,11 +487,172 @@ fn spawn_label(commands: &mut Commands, geom: &layout::BoxGeom, translation: Vec
         TextColor(Color::srgb(0.95, 0.97, 1.0)),
         Transform {
             translation: Vec3::new(translation.x, translation.y + scale.y * 0.5 + 0.02, translation.z),
-            rotation: Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+            rotation: Quat::from_rotation_y(geom.yaw)
+                * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
             scale: Vec3::splat(scale_px),
         },
         MapPiece,
     ));
+}
+
+fn spawn_arc(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    arc: &layout::ArcGeom,
+) {
+    let (mesh, translation, scale) = arc_mesh(arc);
+    let color = if arc.branch {
+        Color::srgb(0.45, 0.08, 0.08)
+    } else {
+        Color::srgb(0.22, 0.42, 0.72)
+    };
+    let mut entity = commands.spawn((
+        Mesh3d(meshes.add(mesh)),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: color,
+            perceptual_roughness: 0.7,
+            ..default()
+        })),
+        Transform {
+            translation,
+            scale,
+            ..default()
+        },
+        MapPiece,
+    ));
+    if !arc.branch {
+        entity.insert(Pickable {
+            path: arc.path.clone(),
+        });
+    }
+    if arc.label && !arc.name.is_empty() {
+        let mid = (arc.theta0 + arc.theta1) * 0.5;
+        let r = arc.r0 + (arc.r1 - arc.r0) * 0.18;
+        let pos = Vec3::new(r * mid.cos(), translation.y + scale.y * 0.5 + 0.03, r * mid.sin());
+        let shown: String = arc.name.chars().take(22).collect();
+        commands.spawn((
+            Text2d::new(shown),
+            TextFont {
+                font_size: 40.0,
+                ..default()
+            },
+            TextColor(Color::srgb(0.95, 0.97, 1.0)),
+            Transform {
+                translation: pos,
+                rotation: Quat::from_rotation_y(mid)
+                    * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+                scale: Vec3::splat(0.012),
+            },
+            MapPiece,
+        ));
+    }
+}
+
+fn arc_mesh(arc: &layout::ArcGeom) -> (Mesh, Vec3, Vec3) {
+    let mut theta0 = arc.theta0;
+    let mut theta1 = arc.theta1;
+    if theta1 < theta0 {
+        std::mem::swap(&mut theta0, &mut theta1);
+    }
+    let span = (theta1 - theta0).max(0.01);
+    let segs = ((span / 0.09).ceil() as usize).clamp(2, 96);
+    let y0 = arc.y;
+    let y1 = arc.y + arc.height.max(0.01);
+    let mut pts = Vec::with_capacity((segs + 1) * 2);
+    for s in 0..=segs {
+        let t = theta0 + span * (s as f32 / segs as f32);
+        let (sin, cos) = t.sin_cos();
+        pts.push(Vec3::new(arc.r0 * cos, y0, arc.r0 * sin));
+        pts.push(Vec3::new(arc.r1 * cos, y1, arc.r1 * sin));
+    }
+    let mut min = pts[0];
+    let mut max = pts[0];
+    for p in &pts {
+        min = min.min(*p);
+        max = max.max(*p);
+    }
+    min.y = min.y.min(y0);
+    max.y = max.y.max(y1);
+    let center = (min + max) * 0.5;
+    let size = (max - min).max(Vec3::splat(0.02));
+    // Rebuild a proper quad mesh in local space so the picker AABB matches.
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut uvs = Vec::new();
+    let mut indices = Vec::new();
+    let to_local = |p: Vec3| (p - center) / size;
+    let mut ring = Vec::with_capacity(segs + 1);
+    for s in 0..=segs {
+        let t = theta0 + span * (s as f32 / segs as f32);
+        let (sin, cos) = t.sin_cos();
+        let inner = Vec3::new(arc.r0 * cos, 0.0, arc.r0 * sin);
+        let outer = Vec3::new(arc.r1 * cos, 0.0, arc.r1 * sin);
+        ring.push((inner, outer));
+    }
+    let push_quad = |positions: &mut Vec<[f32; 3]>,
+                     normals: &mut Vec<[f32; 3]>,
+                     uvs: &mut Vec<[f32; 2]>,
+                     indices: &mut Vec<u32>,
+                     quad: [Vec3; 4]| {
+        let n = (quad[1] - quad[0]).cross(quad[2] - quad[0]).normalize_or_zero();
+        let base = positions.len() as u32;
+        for p in quad {
+            let l = to_local(p);
+            positions.push([l.x, l.y, l.z]);
+            normals.push([n.x, n.y, n.z]);
+            uvs.push([0.0, 0.0]);
+        }
+        indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    };
+    for s in 0..segs {
+        let (i0, o0) = ring[s];
+        let (i1, o1) = ring[s + 1];
+        let b0 = Vec3::new(i0.x, y0, i0.z);
+        let b1 = Vec3::new(o0.x, y0, o0.z);
+        let b2 = Vec3::new(i1.x, y0, i1.z);
+        let b3 = Vec3::new(o1.x, y0, o1.z);
+        let t0 = Vec3::new(i0.x, y1, i0.z);
+        let t1 = Vec3::new(o0.x, y1, o0.z);
+        let t2 = Vec3::new(i1.x, y1, i1.z);
+        let t3 = Vec3::new(o1.x, y1, o1.z);
+        push_quad(&mut positions, &mut normals, &mut uvs, &mut indices, [t0, t2, t3, t1]);
+        push_quad(&mut positions, &mut normals, &mut uvs, &mut indices, [b0, b1, b3, b2]);
+        push_quad(&mut positions, &mut normals, &mut uvs, &mut indices, [b0, t0, t2, b2]);
+        push_quad(&mut positions, &mut normals, &mut uvs, &mut indices, [b1, b3, t3, t1]);
+    }
+    let (i0, o0) = ring[0];
+    let (i1, o1) = ring[segs];
+    push_quad(
+        &mut positions,
+        &mut normals,
+        &mut uvs,
+        &mut indices,
+        [
+            Vec3::new(i0.x, y0, i0.z),
+            Vec3::new(o0.x, y0, o0.z),
+            Vec3::new(o0.x, y1, o0.z),
+            Vec3::new(i0.x, y1, i0.z),
+        ],
+    );
+    push_quad(
+        &mut positions,
+        &mut normals,
+        &mut uvs,
+        &mut indices,
+        [
+            Vec3::new(i1.x, y1, i1.z),
+            Vec3::new(o1.x, y1, o1.z),
+            Vec3::new(o1.x, y0, o1.z),
+            Vec3::new(i1.x, y0, i1.z),
+        ],
+    );
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_indices(Indices::U32(indices));
+    (mesh, center, size)
 }
 
 fn spawn_cursor(
@@ -493,7 +661,9 @@ fn spawn_cursor(
     mat: Handle<StandardMaterial>,
     translation: Vec3,
     scale: Vec3,
+    yaw: f32,
 ) {
+    let yaw_q = Quat::from_rotation_y(yaw);
     let half = scale * 0.52;
     let c0 = translation - half;
     let c1 = translation + half;
@@ -515,10 +685,10 @@ fn spawn_cursor(
         } else {
             (c0.z, bar.z)
         };
-        let p = Vec3::new(px, py, pz);
-        spawn_segment(commands, cube.clone(), mat.clone(), p, p + Vec3::new(dx, 0.0, 0.0), thick);
-        spawn_segment(commands, cube.clone(), mat.clone(), p, p + Vec3::new(0.0, dy, 0.0), thick);
-        spawn_segment(commands, cube.clone(), mat.clone(), p, p + Vec3::new(0.0, 0.0, dz), thick);
+        let p = translation + yaw_q * (Vec3::new(px, py, pz) - translation);
+        spawn_segment(commands, cube.clone(), mat.clone(), p, p + yaw_q * Vec3::new(dx, 0.0, 0.0), thick);
+        spawn_segment(commands, cube.clone(), mat.clone(), p, p + yaw_q * Vec3::new(0.0, dy, 0.0), thick);
+        spawn_segment(commands, cube.clone(), mat.clone(), p, p + yaw_q * Vec3::new(0.0, 0.0, dz), thick);
     }
 }
 
@@ -734,7 +904,7 @@ fn side_panel(
                 };
                 let width = match state.mode {
                     layout::LayoutMode::MapV => layout::View::default().target_width as f32,
-                    layout::LayoutMode::TreeV => 48.0,
+                    layout::LayoutMode::TreeV => 36.0,
                 };
                 toggle_birdseye(&mut orbit, width, fov);
             }
