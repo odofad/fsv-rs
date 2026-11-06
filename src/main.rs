@@ -53,6 +53,8 @@ fn print_tree(node: &node::Node, depth: usize) {
         node::NodeType::Symlink => "link",
         node::NodeType::Other => "other",
     };
+    // Reference path and expanded so the fields aren't dead in Phase 0
+    let _ = (&node.path, node.expanded);
     println!(
         "{}{} [{}] size={} subtree={}",
         indent,
