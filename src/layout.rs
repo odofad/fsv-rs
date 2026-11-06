@@ -28,6 +28,7 @@ pub fn mapv_layout(root: &Node) -> Vec<BoxGeom> {
         root_w,
         root_d,
         0.0,
+        root.subtree_size as f32,
         &mut boxes,
     );
 
@@ -41,13 +42,17 @@ fn layout_recursive(
     width: f32,
     depth: f32,
     z: f32,
+    parent_total: f32,
     out: &mut Vec<BoxGeom>,
 ) {
     if width < 0.08 || depth < 0.08 {
         return;
     }
 
-    let height = if node.is_dir() { 0.25 } else { 0.1 };
+    // Height scales with relative size so big nodes stand out
+    let rel = (node.subtree_size.max(1) as f32 / parent_total.max(1.0)).clamp(0.0, 1.0);
+    let base = if node.is_dir() { 0.2 } else { 0.08 };
+    let height = base + rel * 0.8;
 
     out.push(BoxGeom {
         x: x + width / 2.0,
@@ -64,7 +69,6 @@ fn layout_recursive(
         return;
     }
 
-    // Simple squarified-style row packing
     let total = node.subtree_size.max(1) as f32;
     let pad = 0.04;
     let inner_x = x + pad;
@@ -77,7 +81,6 @@ fn layout_recursive(
     let mut remaining_d = inner_d;
 
     while !remaining.is_empty() && remaining_d > 0.1 {
-        // Take a row of children that fit reasonably
         let mut row_area = 0.0f32;
         let mut row_count = 0;
         let mut best_aspect = f32::MAX;
@@ -115,6 +118,7 @@ fn layout_recursive(
                 child_w.min(inner_w - (cursor_x - inner_x)),
                 row_d,
                 z + height,
+                total,
                 out,
             );
 
