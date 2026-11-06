@@ -1,22 +1,14 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use jwalk::WalkDir;
 use crate::node::{Node, NodeType};
 
 pub fn scan(root: &Path) -> Result<Node, std::io::Error> {
-    let mut root_node = Node::new(
-        root.file_name().unwrap_or_default().to_string_lossy().into_owned(),
-        root.to_path_buf(),
-        NodeType::Directory,
-    );
-
-    // Simple recursive-style build via jwalk (depth-first collection)
-    // For Phase 0 we build a flat-ish tree then nest it properly
-    let mut nodes: Vec<(usize, Node)> = Vec::new();
+    let mut nodes: HashMap<PathBuf, Node> = HashMap::new();
 
     for entry in WalkDir::new(root).sort(true) {
         let entry = entry?;
         let path = entry.path();
-        let depth = entry.depth();
 
         let kind = if entry.file_type().is_dir() {
             NodeType::Directory
@@ -32,33 +24,62 @@ pub fn scan(root: &Path) -> Result<Node, std::io::Error> {
         let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
         let mtime = metadata.and_then(|m| m.modified().ok());
 
-        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
 
         let mut node = Node::new(name, path.clone(), kind);
         node.size = size;
         node.mtime = mtime;
 
-        nodes.push((depth, node));
+        nodes.insert(path, node);
     }
 
-    // Rebuild into proper tree (simple parent-pointer approach)
-    // For a first cut we just return the root and attach children by depth
-    // (proper tree building can be refined)
-    if !nodes.is_empty() {
-        root_node = nodes.remove(0).1;
-        // TODO: properly nest by depth for Phase 0 verification
-        // For now just collect all as flat children of root for testing
-        for (_, node) in nodes {
-            if node.path.parent() == Some(&root_node.path) {
-                root_node.children.push(node);
+    // Nest children under their parents
+    let mut root_node = nodes.remove(root).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "root not found")
+    })?;
+
+    let paths: Vec<PathBuf> = nodes.keys().cloned().collect();
+    for path in paths {
+        if let Some(parent_path) = path.parent() {
+            if let Some(parent) = nodes.get_mut(parent_path) {
+                if let Some(child) = nodes.remove(&path) {
+                    parent.children.push(child);
+                }
             }
         }
     }
 
-    // Compute subtree sizes (bottom-up)
+    // Attach any remaining top-level children to root
+    for (_, child) in nodes {
+        root_node.children.push(child);
+    }
+
+    // Sort children: dirs first, then by size descending
+    sort_children(&mut root_node);
+
+    // Compute subtree sizes
     compute_subtree_size(&mut root_node);
 
     Ok(root_node)
+}
+
+fn sort_children(node: &mut Node) {
+    node.children.sort_by(|a, b| {
+        let a_dir = a.is_dir();
+        let b_dir = b.is_dir();
+        match (a_dir, b_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => b.subtree_size.cmp(&a.subtree_size).then(a.name.cmp(&b.name)),
+        }
+    });
+    for child in &mut node.children {
+        sort_children(child);
+    }
 }
 
 fn compute_subtree_size(node: &mut Node) -> u64 {
