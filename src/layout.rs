@@ -79,7 +79,6 @@ pub struct ArcGeom {
     pub height: f32,
     pub path: std::path::PathBuf,
     pub name: String,
-    pub kind: NodeType,
     pub branch: bool,
     pub label: bool,
 }
@@ -632,7 +631,6 @@ fn raw_arc(
         height: height as f32,
         path: node.path.clone(),
         name: node.name.clone(),
-        kind: node.kind.clone(),
         branch,
         label,
     }
