@@ -29,6 +29,11 @@ struct AppState {
     selected: Option<PathBuf>,
     /// Block under the cursor. Readout only, does not rebuild.
     hovered: Option<PathBuf>,
+    /// color.c COLOR_BY_TIMESTAMP. Files take a rainbow, directories keep type.
+    color_age: bool,
+    /// World height the TreeV camera should be able to see.
+    frame: f32,
+    frame_pending: bool,
     /// Rebuild the meshes. Not Bevy's change flag: writing geometry
     /// onto the tree must not schedule another rebuild by itself.
     dirty: bool,
@@ -101,10 +106,13 @@ fn main() {
                     mode,
                     selected: None,
                     hovered: None,
+                    color_age: true,
+                    frame: 36.0,
+                    frame_pending: true,
                     dirty: true,
                 })
                 .add_systems(Startup, setup)
-                .add_systems(Update, (orbit_camera, hover_pick, click_expand, face_labels, side_panel, rebuild_layout))
+                .add_systems(Update, (orbit_camera, hover_pick, click_expand, face_labels, side_panel, rebuild_layout, apply_frame))
                 .run();
         }
         Err(e) => {
@@ -148,6 +156,22 @@ fn setup(
 
     spawn_geometry(&mut commands, &mut state, &mut meshes, &mut materials);
     state.dirty = false;
+}
+
+fn apply_frame(mut state: ResMut<AppState>, mut orbits: Query<&mut OrbitCamera>) {
+    if !state.frame_pending || state.dirty {
+        return;
+    }
+    state.frame_pending = false;
+    if !matches!(state.mode, layout::LayoutMode::TreeV) {
+        return;
+    }
+    let Ok(mut orbit) = orbits.get_single_mut() else { return; };
+    // camera.c frames TreeV with the tallest leaf, not just the footprint.
+    let dist = (state.frame * 1.15).clamp(18.0, 700.0);
+    orbit.distance = dist;
+    orbit.pitch = -0.65;
+    orbit.fly = None;
 }
 
 fn orbit_camera(
@@ -335,8 +359,17 @@ fn spawn_geometry(
         ..default()
     });
 
+    let mut top = result.span;
     for geom in result.boxes {
-        let mut color = color_for_kind(&geom.kind);
+        top = top.max(geom.z + geom.height * 0.5);
+        let mut color = if state.color_age {
+            match geom.age {
+                Some(age) => age_color(age),
+                None => color_for_kind(&geom.kind),
+            }
+        } else {
+            color_for_kind(&geom.kind)
+        };
         if geom.floor {
             let [r, g, b, a] = color.to_srgba().to_f32_array();
             color = Color::srgba(r * 0.12, g * 0.12, b * 0.12, a);
@@ -394,6 +427,8 @@ fn spawn_geometry(
     for arc in result.arcs {
         spawn_arc(commands, meshes, materials, &arc);
     }
+
+    state.frame = top.max(8.0);
 }
 
 /// Unit box (-0.5..0.5) with the top face inset. Scale it by the block size.
@@ -698,6 +733,12 @@ fn color_for_kind(kind: &node::NodeType) -> Color {
         node::NodeType::Symlink => Color::srgb(1.0, 0.5, 0.8),
         node::NodeType::Other => Color::srgb(0.6, 0.6, 0.6),
     }
+}
+
+/// color.c rainbow_color(1 - x). Old files sit at the blue end, new ones at red.
+fn age_color(age: f32) -> Color {
+    let hue = (1.0 - age.clamp(0.0, 1.0)) * 270.0;
+    Color::hsl(hue, 0.78, 0.55)
 }
 
 fn click_expand(
@@ -1080,12 +1121,22 @@ fn side_panel(
             layout::LayoutMode::TreeV => "TreeV",
         };
         ui.label(format!("Mode: {}", mode_label));
+        ui.label(match state.mode {
+            layout::LayoutMode::MapV => "Area shows size. Height is fixed.",
+            layout::LayoutMode::TreeV => "Platforms and branches. File height is size.",
+        });
+
+        if ui.button(if state.color_age { "Color: age" } else { "Color: type" }).clicked() {
+            state.color_age = !state.color_age;
+            changed = true;
+        }
 
         if ui.button("Toggle MapV / TreeV").clicked() {
             state.mode = match state.mode {
                 layout::LayoutMode::MapV => layout::LayoutMode::TreeV,
                 layout::LayoutMode::TreeV => layout::LayoutMode::MapV,
             };
+            state.frame_pending = true;
             changed = true;
         }
 
