@@ -27,6 +27,8 @@ struct AppState {
     root: node::Node,
     mode: layout::LayoutMode,
     selected: Option<PathBuf>,
+    /// Block under the cursor. Readout only, does not rebuild.
+    hovered: Option<PathBuf>,
     /// Rebuild the meshes. Not Bevy's change flag: writing geometry
     /// onto the tree must not schedule another rebuild by itself.
     dirty: bool,
@@ -98,10 +100,11 @@ fn main() {
                     root,
                     mode,
                     selected: None,
+                    hovered: None,
                     dirty: true,
                 })
                 .add_systems(Startup, setup)
-                .add_systems(Update, (orbit_camera, click_expand, side_panel, rebuild_layout))
+                .add_systems(Update, (orbit_camera, hover_pick, click_expand, side_panel, rebuild_layout))
                 .run();
         }
         Err(e) => {
@@ -870,6 +873,132 @@ fn fly_between(orbit: &mut OrbitCamera, focus: Vec3, yaw: f32, pitch: f32, dista
     });
 }
 
+
+fn hover_pick(
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform)>,
+    pickables: Query<(&Pickable, &Transform)>,
+    mut state: ResMut<AppState>,
+    mut egui: EguiContexts,
+) {
+    if egui.ctx_mut().is_pointer_over_area() {
+        return;
+    }
+    let Ok(window) = windows.get_single() else { return; };
+    let Some(cursor) = window.cursor_position() else {
+        state.hovered = None;
+        return;
+    };
+    let Ok((camera, cam_transform)) = cameras.get_single() else { return; };
+    let Some(ray) = camera.viewport_to_world(cam_transform, cursor).ok() else { return; };
+
+    let mut best: Option<(f32, PathBuf)> = None;
+    for (pick, transform) in &pickables {
+        let half = transform.scale * 0.5;
+        let min = transform.translation - half;
+        let max = transform.translation + half;
+        if let Some(dist) = ray_aabb(ray.origin, *ray.direction, min, max) {
+            if best.as_ref().map_or(true, |(d, _)| dist < *d) {
+                best = Some((dist, pick.path.clone()));
+            }
+        }
+    }
+    state.hovered = best.map(|(_, path)| path);
+}
+
+struct Readout {
+    name: String,
+    kind: String,
+    size: String,
+    tree: Option<String>,
+    path: String,
+}
+
+fn describe(root: &node::Node, path: Option<&Path>) -> Option<Readout> {
+    let path = path?;
+    let node = find_node(root, path)?;
+    let kind = match node.kind {
+        node::NodeType::Directory => "Directory",
+        node::NodeType::File => "File",
+        node::NodeType::Symlink => "Symlink",
+        node::NodeType::Other => "Other",
+    };
+    Some(Readout {
+        name: node.name.clone(),
+        kind: kind.to_string(),
+        size: human_size(node.size),
+        tree: node.is_dir().then(|| human_size(node.subtree_size)),
+        path: node.path.display().to_string(),
+    })
+}
+
+fn find_node<'a>(node: &'a node::Node, path: &Path) -> Option<&'a node::Node> {
+    if node.path == path {
+        return Some(node);
+    }
+    for child in &node.children {
+        if let Some(found) = find_node(child, path) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// The directory whose children belong in the file list.
+/// A file points at its parent. Nothing selected means the root.
+fn list_dir<'a>(root: &'a node::Node, selected: Option<&Path>) -> &'a node::Node {
+    let Some(path) = selected else { return root; };
+    let Some(node) = find_node(root, path) else { return root; };
+    if node.is_dir() {
+        return node;
+    }
+    node.path
+        .parent()
+        .and_then(|parent| find_node(root, parent))
+        .unwrap_or(root)
+}
+
+struct FileRow {
+    name: String,
+    kind: &'static str,
+    size: String,
+    path: PathBuf,
+    is_dir: bool,
+}
+
+fn file_rows(dir: &node::Node) -> Vec<FileRow> {
+    let mut rows: Vec<FileRow> = dir
+        .children
+        .iter()
+        .map(|child| {
+            let kind = match child.kind {
+                node::NodeType::Directory => "dir",
+                node::NodeType::File => "file",
+                node::NodeType::Symlink => "link",
+                node::NodeType::Other => "other",
+            };
+            let bytes = if child.is_dir() { child.subtree_size } else { child.size };
+            FileRow {
+                name: child.name.clone(),
+                kind,
+                size: human_size(bytes),
+                path: child.path.clone(),
+                is_dir: child.is_dir(),
+            }
+        })
+        .collect();
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    rows
+}
+
+fn node_count(n: usize) -> String {
+    match n {
+        0 => String::new(),
+        1 => "1 node".to_string(),
+        n => format!("{n} nodes"),
+    }
+}
+
 fn side_panel(
     mut contexts: EguiContexts,
     mut state: ResMut<AppState>,
@@ -879,6 +1008,12 @@ fn side_panel(
     let mut changed = false;
     let bird_now = orbits.get_single().map(|o| o.birdseye).unwrap_or(false);
     let mut bird_on = bird_now;
+    let focus = state.hovered.clone().or_else(|| state.selected.clone());
+    let readout = describe(&state.root, focus.as_deref());
+    let listed = list_dir(&state.root, state.selected.as_deref());
+    let list_name = listed.name.clone();
+    let rows = file_rows(listed);
+    let count = node_count(rows.len());
     egui::SidePanel::left("tree_panel").show(contexts.ctx_mut(), |ui| {
         ui.heading("fsv-rs");
         ui.separator();
@@ -912,9 +1047,53 @@ fn side_panel(
         }
 
         ui.separator();
-        ui.label("Tree");
+        match readout {
+            Some(info) => {
+                ui.label(egui::RichText::new(info.name).strong());
+                ui.label(info.kind);
+                ui.label(format!("Size  {}", info.size));
+                if let Some(tree) = info.tree {
+                    ui.label(format!("Tree  {tree}"));
+                }
+                ui.label(egui::RichText::new(info.path).small());
+            }
+            None => {
+                ui.label("Point at a block");
+            }
+        }
 
-        changed |= show_node(ui, &mut state.root, 0);
+        ui.separator();
+        ui.label(egui::RichText::new(list_name).strong());
+        if !count.is_empty() {
+            ui.label(count);
+        }
+        egui::ScrollArea::vertical()
+            .id_salt("file_list")
+            .max_height(320.0)
+            .show(ui, |ui| {
+                for row in &rows {
+                    let text = format!("{:<5} {}   {}", row.kind, row.name, row.size);
+                    let on = state.selected.as_ref() == Some(&row.path);
+                    if ui.selectable_label(on, text).clicked() {
+                        state.selected = Some(row.path.clone());
+                        if row.is_dir && toggle_expanded(&mut state.root, &row.path) {
+                            changed = true;
+                        }
+                    }
+                }
+            });
+
+        ui.separator();
+        egui::CollapsingHeader::new("Directory tree")
+            .default_open(false)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("dir_tree")
+                    .max_height(240.0)
+                    .show(ui, |ui| {
+                        changed |= show_node(ui, &mut state.root, 0);
+                    });
+            });
     });
     if changed {
         state.dirty = true;
