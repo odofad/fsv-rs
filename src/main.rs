@@ -104,7 +104,7 @@ fn main() {
                     dirty: true,
                 })
                 .add_systems(Startup, setup)
-                .add_systems(Update, (orbit_camera, hover_pick, click_expand, side_panel, rebuild_layout))
+                .add_systems(Update, (orbit_camera, hover_pick, click_expand, face_labels, side_panel, rebuild_layout))
                 .run();
         }
         Err(e) => {
@@ -468,31 +468,29 @@ fn spawn_segment(
     ));
 }
 
+#[derive(Component)]
+struct FaceLabel {
+    name: String,
+    center: Vec3,
+    axis_u: Vec3,
+    axis_v: Vec3,
+}
+
 fn spawn_label(commands: &mut Commands, geom: &layout::BoxGeom, translation: Vec3, scale: Vec3) {
-    let shown: String = geom.name.chars().take(22).collect();
-    let n = shown.chars().count().max(1) as f32;
+    // mapv_apply_label: 0.8125 of the top width, (2 - phi) of the depth, black.
+    let shown: String = geom.name.chars().take(48).collect();
     let top_w = scale.x * (1.0 - 2.0 * geom.slant_x) * 0.8125;
     let top_d = scale.z * (1.0 - 2.0 * geom.slant_y) * 0.382;
-    if top_w < 0.05 || top_d < 0.03 {
+    if top_w < 0.02 || top_d < 0.02 || shown.is_empty() {
         return;
     }
-    let font = 40.0;
-    let scale_px = (top_w / (n * font * 0.55)).min(top_d / font);
-    if scale_px < 0.0008 {
-        return;
-    }
+    let yaw_q = Quat::from_rotation_y(geom.yaw);
     commands.spawn((
-        Text2d::new(shown),
-        TextFont {
-            font_size: font,
-            ..default()
-        },
-        TextColor(Color::srgb(0.95, 0.97, 1.0)),
-        Transform {
-            translation: Vec3::new(translation.x, translation.y + scale.y * 0.5 + 0.02, translation.z),
-            rotation: Quat::from_rotation_y(geom.yaw)
-                * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
-            scale: Vec3::splat(scale_px),
+        FaceLabel {
+            name: shown,
+            center: Vec3::new(translation.x, translation.y + scale.y * 0.5 + 0.03, translation.z),
+            axis_u: yaw_q * Vec3::new(top_w, 0.0, 0.0),
+            axis_v: yaw_q * Vec3::new(0.0, 0.0, top_d),
         },
         MapPiece,
     ));
@@ -532,20 +530,17 @@ fn spawn_arc(
     if arc.label && !arc.name.is_empty() {
         let mid = (arc.theta0 + arc.theta1) * 0.5;
         let r = arc.r0 + (arc.r1 - arc.r0) * 0.18;
-        let pos = Vec3::new(r * mid.cos(), translation.y + scale.y * 0.5 + 0.03, r * mid.sin());
-        let shown: String = arc.name.chars().take(22).collect();
+        let pos = Vec3::new(r * mid.cos(), translation.y + scale.y * 0.5 + 0.04, r * mid.sin());
+        let tangent = Vec3::new(-mid.sin(), 0.0, mid.cos());
+        let radial = Vec3::new(mid.cos(), 0.0, mid.sin());
+        let span = (arc.theta1 - arc.theta0).abs().max(0.05);
+        let shown: String = arc.name.chars().take(48).collect();
         commands.spawn((
-            Text2d::new(shown),
-            TextFont {
-                font_size: 40.0,
-                ..default()
-            },
-            TextColor(Color::srgb(0.95, 0.97, 1.0)),
-            Transform {
-                translation: pos,
-                rotation: Quat::from_rotation_y(mid)
-                    * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
-                scale: Vec3::splat(0.012),
+            FaceLabel {
+                name: shown,
+                center: pos,
+                axis_u: tangent * (r * span * 0.55),
+                axis_v: radial * ((arc.r1 - arc.r0).abs() * 0.22).max(0.15),
             },
             MapPiece,
         ));
@@ -996,6 +991,68 @@ fn node_count(n: usize) -> String {
         0 => String::new(),
         1 => "1 node".to_string(),
         n => format!("{n} nodes"),
+    }
+}
+
+fn face_labels(
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform)>,
+    labels: Query<&FaceLabel>,
+    mut egui: EguiContexts,
+) {
+    let Ok(window) = windows.get_single() else { return; };
+    let Ok((camera, cam_transform)) = cameras.get_single() else { return; };
+    let scale = window.scale_factor() as f32;
+    if scale <= 0.0 {
+        return;
+    }
+    let ctx = egui.ctx_mut().clone();
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Background,
+        egui::Id::new("face-labels"),
+    ));
+    let color = egui::Color32::from_rgb(8, 10, 14);
+
+    for label in &labels {
+        let Ok(center) = camera.world_to_viewport(cam_transform, label.center) else { continue; };
+        let Ok(end_u) = camera.world_to_viewport(cam_transform, label.center + label.axis_u) else { continue; };
+        let Ok(end_v) = camera.world_to_viewport(cam_transform, label.center + label.axis_v) else { continue; };
+        let px_w = (end_u - center).length() / scale;
+        let px_h = (end_v - center).length() / scale;
+        if px_w < 36.0 || px_h < 12.0 {
+            continue;
+        }
+        let pos = egui::pos2(center.x / scale, center.y / scale);
+        if ctx.layer_id_at(pos).is_some() {
+            continue;
+        }
+        let mut font_size = (px_h * 0.85).clamp(10.0, 22.0);
+        let mut shown = label.name.clone();
+        for _ in 0..6 {
+            let width = ctx.fonts(|fonts| {
+                fonts
+                    .layout_no_wrap(shown.clone(), egui::FontId::proportional(font_size), color)
+                    .rect
+                    .width()
+            });
+            if width <= px_w * 0.92 {
+                break;
+            }
+            if shown.chars().count() > 4 && font_size <= 11.0 {
+                let keep = shown.chars().count().saturating_sub(2);
+                shown = shown.chars().take(keep.max(3)).collect();
+                shown.push('…');
+            } else {
+                font_size = (font_size * 0.82).max(10.0);
+            }
+        }
+        painter.text(
+            pos,
+            egui::Align2::CENTER_CENTER,
+            shown,
+            egui::FontId::proportional(font_size),
+            color,
+        );
     }
 }
 
