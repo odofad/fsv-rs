@@ -54,6 +54,9 @@ pub struct BoxGeom {
     pub label: bool,
     /// Yaw around the up axis, radians. MapV leaves this at 0.
     pub yaw: f32,
+    /// File age, 0 oldest to 1 newest. Directories stay None: color.c
+    /// keeps their type color even in timestamp mode.
+    pub age: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -92,13 +95,50 @@ pub struct LayoutResult {
 }
 
 pub fn layout(root: &mut Node, mode: LayoutMode) -> LayoutResult {
+    let mut oldest = u64::MAX;
+    let mut newest = 0u64;
+    mtime_span(root, &mut oldest, &mut newest);
+    if oldest == u64::MAX {
+        oldest = 0;
+    }
+    let span = (oldest, newest);
     match mode {
         LayoutMode::MapV => {
             build_mapv(root);
-            emit_mapv(root, &View::default())
+            emit_mapv(root, &View::default(), span)
         }
-        LayoutMode::TreeV => treev_layout(root),
+        LayoutMode::TreeV => treev_layout(root, span),
     }
+}
+
+fn mtime_span(node: &Node, oldest: &mut u64, newest: &mut u64) {
+    if !node.is_dir() {
+        if let Some(t) = node.mtime {
+            if let Ok(d) = t.duration_since(std::time::UNIX_EPOCH) {
+                let s = d.as_secs();
+                *oldest = (*oldest).min(s);
+                *newest = (*newest).max(s);
+            }
+        }
+    }
+    for child in &node.children {
+        mtime_span(child, oldest, newest);
+    }
+}
+
+/// color.c time_color: directories are not aged. Files run from the
+/// oldest mtime in the tree to the newest. The original default window
+/// is one week, which paints an archive all one color.
+fn file_age(node: &Node, oldest: u64, newest: u64) -> Option<f32> {
+    if node.is_dir() {
+        return None;
+    }
+    let t = node.mtime?;
+    let s = t.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    if newest <= oldest {
+        return Some(1.0);
+    }
+    Some(((s.saturating_sub(oldest)) as f32 / (newest - oldest) as f32).clamp(0.0, 1.0))
 }
 
 fn represented_bytes(node: &Node) -> f64 {
@@ -355,7 +395,7 @@ fn place_block(
     });
 }
 
-fn emit_mapv(root: &Node, view: &View) -> LayoutResult {
+fn emit_mapv(root: &Node, view: &View, span: (u64, u64)) -> LayoutResult {
     let mut boxes = Vec::new();
     let Some(root_geom) = root.map else {
         return LayoutResult {
@@ -376,8 +416,8 @@ fn emit_mapv(root: &Node, view: &View) -> LayoutResult {
         }
     }
 
-    push_box(root, 0.0, true, xy, z_scale, 0.0, &mut boxes);
-    emit_children(root, 0.0, xy, z_scale, view.gap, &mut boxes);
+    push_box(root, 0.0, true, xy, z_scale, 0.0, span, &mut boxes);
+    emit_children(root, 0.0, xy, z_scale, view.gap, span, &mut boxes);
 
     LayoutResult {
         boxes,
@@ -393,6 +433,7 @@ fn emit_children(
     xy: f64,
     z_scale: f64,
     gap: f64,
+    span: (u64, u64),
     out: &mut Vec<BoxGeom>,
 ) {
     let Some(geom) = dir.map else {
@@ -403,9 +444,9 @@ fn emit_children(
     }
     let child_z = z0 + geom.height;
     for child in &dir.children {
-        push_box(child, child_z, false, xy, z_scale, gap, out);
+        push_box(child, child_z, false, xy, z_scale, gap, span, out);
         if child.is_dir() {
-            emit_children(child, child_z, xy, z_scale, gap, out);
+            emit_children(child, child_z, xy, z_scale, gap, span, out);
         }
     }
 }
@@ -417,6 +458,7 @@ fn push_box(
     xy: f64,
     z_scale: f64,
     gap: f64,
+    span: (u64, u64),
     out: &mut Vec<BoxGeom>,
 ) {
     let Some(geom) = node.map else {
@@ -470,6 +512,7 @@ fn push_box(
         folder: collapsed_dir && !is_base,
         label: !is_base && !node.name.is_empty() && (collapsed_dir || !node.is_dir()),
         yaw: 0.0,
+        age: file_age(node, span.0, span.1),
     });
 }
 
@@ -505,7 +548,7 @@ pub fn cursor_bar() -> f32 {
     t * t * t * t
 }
 
-pub fn treev_layout(root: &Node) -> LayoutResult {
+pub fn treev_layout(root: &Node, span: (u64, u64)) -> LayoutResult {
     // geometry.c treev_init / treev_arrange / treev_build_dir.
     // A directory is an arc. Files and collapsed folders stand on it in rows.
     // Expanded folders become the next arc out, joined by a thin branch.
@@ -547,6 +590,7 @@ pub fn treev_layout(root: &Node) -> LayoutResult {
             &mut boxes,
             &mut arcs,
             &mut max_r,
+            span,
         );
         arcs.push(raw_arc(
             core - 0.5 * BRANCH,
@@ -580,6 +624,7 @@ pub fn treev_layout(root: &Node) -> LayoutResult {
             true,
             &mut boxes,
             &mut max_r,
+            span,
         );
     }
 
@@ -740,6 +785,7 @@ fn tv_emit(
     boxes: &mut Vec<BoxGeom>,
     arcs: &mut Vec<ArcGeom>,
     max_r: &mut f64,
+    span: (u64, u64),
 ) {
     const BRANCH: f64 = 48.0;
     const PLATFORM_H: f64 = 158.2;
@@ -789,6 +835,7 @@ fn tv_emit(
                 full,
                 boxes,
                 max_r,
+                span,
             );
             theta -= inter;
         }
@@ -830,6 +877,7 @@ fn tv_emit(
             boxes,
             arcs,
             max_r,
+            span,
         );
     }
     if let (Some(a), Some(b)) = (first, last) {
@@ -871,15 +919,8 @@ const SPACING_W: f64 = 512.0;
 const SPACING_D: f64 = 3072.0;
 
 fn tv_leaf_height(node: &Node) -> f64 {
-    const EDGE: f64 = 256.0;
-    let bytes = represented_bytes(node).max(64.0);
-    let raw = bytes.sqrt();
-    if raw <= EDGE {
-        raw.max(EDGE * 0.15)
-    } else {
-        let doublings = (bytes / (EDGE * EDGE)).ln() / std::f64::consts::LN_2;
-        (EDGE + doublings * EDGE * 0.18).min(EDGE * 2.4)
-    }
+    // geometry.c treev_init_recursive: leaf.height = sqrt(size), size at least 64.
+    represented_bytes(node).max(64.0).sqrt()
 }
 
 fn tv_leaf(
@@ -891,12 +932,12 @@ fn tv_leaf(
     full: bool,
     boxes: &mut Vec<BoxGeom>,
     max_r: &mut f64,
+    span: (u64, u64),
 ) {
     const LEAF: f64 = 256.0;
     let edge = if full { LEAF } else { 0.875 * LEAF };
-    // geometry.c: leaf.height = sqrt(bytes). A 64 KiB file is one leaf
-    // edge tall. Past that, sqrt turns gigabytes into needles, so grow
-    // slowly: a bit under a fifth of an edge per doubling, never past 2.4.
+    // geometry.c: leaf.height = sqrt(bytes). The camera frames the tallest
+    // one, which is what geometry_treev_max_leaf_height is for.
     let height = if full { tv_leaf_height(node) } else { LEAF / 64.0 };
     let theta = abs_deg.to_radians();
     let r = r0 + dist;
@@ -918,5 +959,6 @@ fn tv_leaf(
         folder: collapsed_dir,
         label: full && !node.name.is_empty(),
         yaw: theta as f32,
+        age: file_age(node, span.0, span.1),
     });
 }
