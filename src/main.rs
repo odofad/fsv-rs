@@ -539,7 +539,7 @@ fn spawn_arc(
 ) {
     let (mesh, translation, scale) = arc_mesh(arc);
     let color = if arc.branch {
-        Color::srgb(0.45, 0.08, 0.08)
+        Color::srgb(0.9, 0.22, 0.16)
     } else {
         Color::srgb(0.22, 0.42, 0.72)
     };
@@ -1122,8 +1122,8 @@ fn side_panel(
         };
         ui.label(format!("Mode: {}", mode_label));
         ui.label(match state.mode {
-            layout::LayoutMode::MapV => "Area shows size. Height is fixed.",
-            layout::LayoutMode::TreeV => "Platforms and branches. File height is size.",
+            layout::LayoutMode::MapV => "Area shows size. No wires in this mode.",
+            layout::LayoutMode::TreeV => "Each folder is a platform. Wires join them.",
         });
 
         if ui.button(if state.color_age { "Color: age" } else { "Color: type" }).clicked() {
