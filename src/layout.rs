@@ -919,8 +919,18 @@ const SPACING_W: f64 = 512.0;
 const SPACING_D: f64 = 3072.0;
 
 fn tv_leaf_height(node: &Node) -> f64 {
-    // geometry.c treev_init_recursive: leaf.height = sqrt(size), size at least 64.
-    represented_bytes(node).max(64.0).sqrt()
+    // geometry.c uses sqrt(bytes). On a 1999 disk that stayed near the
+    // leaf edge. A few gigabytes is ~100 edges, which hides the platforms.
+    // Same order as sqrt, then a slow climb that stops at 2.4 edges.
+    const EDGE: f64 = 256.0;
+    let bytes = represented_bytes(node).max(64.0);
+    let raw = bytes.sqrt();
+    if raw <= EDGE {
+        raw.max(EDGE * 0.2)
+    } else {
+        let doublings = (bytes / (EDGE * EDGE)).ln() / std::f64::consts::LN_2;
+        (EDGE + doublings * EDGE * 0.18).min(EDGE * 2.4)
+    }
 }
 
 fn tv_leaf(
