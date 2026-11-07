@@ -598,7 +598,7 @@ pub fn treev_layout(root: &Node, span: (u64, u64)) -> LayoutResult {
             0.0,
             360.0,
             0.0,
-            8.0,
+            48.0,
             root,
             true,
             false,
@@ -609,7 +609,7 @@ pub fn treev_layout(root: &Node, span: (u64, u64)) -> LayoutResult {
             90.0 - tv_half_deg(BRANCH, core + 0.5 * SPACING_D),
             90.0 + tv_half_deg(BRANCH, core + 0.5 * SPACING_D),
             0.0,
-            8.0,
+            48.0,
             root,
             true,
             false,
@@ -683,16 +683,27 @@ fn raw_arc(
 
 /// Arc width of this platform, its depth, and the arc taken by expanded children.
 fn tv_measure(node: &Node, r0: f64) -> (f64, f64, f64) {
-    if !node.is_dir() || !node.expanded {
+    if !node.is_dir() {
         return (0.0, 0.0, 0.0);
     }
-    let (depth, arc) = tv_fit(node.children.len(), r0);
+    // A collapsed directory is still a pedestal: its own files sit on it,
+    // and one wire runs back to the parent. Only an expanded directory
+    // grows another ring of pedestals.
+    let reveal = node.expanded;
+    let n_leaves = node
+        .children
+        .iter()
+        .filter(|child| !(child.is_dir() && (child.expanded || reveal)))
+        .count();
+    let (depth, arc) = tv_fit(n_leaves.max(1), r0);
     let child_r = r0 + depth + SPACING_D;
     let mut sub = 0.0;
-    for child in &node.children {
-        if child.is_dir() && child.expanded {
-            let (ca, _, cs) = tv_measure(child, child_r);
-            sub += ca.max(cs);
+    if reveal {
+        for child in &node.children {
+            if child.is_dir() {
+                let (ca, _, cs) = tv_measure(child, child_r);
+                sub += ca.max(cs);
+            }
         }
     }
     (arc, depth, sub)
@@ -791,7 +802,12 @@ fn tv_emit(
     const PLATFORM_H: f64 = 158.2;
     const PI: f64 = std::f64::consts::PI;
 
-    let (depth, arc) = tv_fit(node.children.len(), r0);
+    let n_leaves = node
+        .children
+        .iter()
+        .filter(|child| !(child.is_dir() && (child.expanded || node.expanded)))
+        .count();
+    let (depth, arc) = tv_fit(n_leaves.max(1), r0);
     let half = 0.5 * arc;
     // Nominal arc already leaves SPACING_W out of the leaf rows. Flare the
     // slab a little past that so the end cubes are not sitting on the rim.
@@ -809,9 +825,14 @@ fn tv_emit(
     ));
     *max_r = max_r.max(r0 + depth);
 
-    let mut remaining = node.children.len();
+    let leaves: Vec<&Node> = node
+        .children
+        .iter()
+        .filter(|child| !(child.is_dir() && (child.expanded || node.expanded)))
+        .collect();
+    let mut remaining = leaves.len();
     let mut pos_r = r0 + LEAF;
-    let mut idx = node.children.len();
+    let mut idx = leaves.len();
     while idx > 0 {
         let arc_len = (PI / 180.0) * pos_r * arc - SPACING_W;
         let mut row_n = ((arc_len - EDGE05) / PITCH).floor() as isize;
@@ -824,15 +845,13 @@ fn tv_emit(
         let mut theta = 0.5 * inter * (take as f64 - 1.0);
         for _ in 0..take {
             idx -= 1;
-            let child = &node.children[idx];
-            let full = !(child.is_dir() && child.expanded);
             tv_leaf(
-                child,
+                leaves[idx],
                 r0,
                 pos_r - r0,
                 abs_deg + theta,
                 z0 + PLATFORM_H,
-                full,
+                true,
                 boxes,
                 max_r,
                 span,
@@ -853,14 +872,14 @@ fn tv_emit(
         * node
             .children
             .iter()
-            .filter(|c| c.is_dir() && c.expanded)
+            .filter(|c| c.is_dir() && (c.expanded || node.expanded))
             .map(|c| {
                 let (ca, _, cs) = tv_measure(c, child_r);
                 ca.max(cs)
             })
             .sum::<f64>();
     for child in &node.children {
-        if !(child.is_dir() && child.expanded) {
+        if !(child.is_dir() && (child.expanded || node.expanded)) {
             continue;
         }
         let (ca, _, cs) = tv_measure(child, child_r);
@@ -890,7 +909,7 @@ fn tv_emit(
             abs_deg - half_w,
             abs_deg + half_w,
             z0,
-            8.0,
+            48.0,
             node,
             true,
             false,
@@ -903,7 +922,7 @@ fn tv_emit(
             abs_deg + a.min(b).min(0.0) - pad,
             abs_deg + a.max(b).max(0.0) + pad,
             z0,
-            8.0,
+            48.0,
             node,
             true,
             false,
