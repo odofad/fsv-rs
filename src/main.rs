@@ -741,9 +741,11 @@ fn spawn_arc(
         let shown: String = arc.name.chars().take(24).collect();
         let max_d = 0.28;
         let (text_w, text_d) = fit_label(max_d * shown.chars().count() as f32, max_d, shown.chars().count());
-        // Just in front of the platform, on the wire, not on the slab.
+        // The wire is 48 units tall and the platform is 158.2. Sit the
+        // name on top of the wire, or the bar covers the letters.
+        let wire_top = arc.y + arc.height * (48.0 / 158.2);
         let r = (arc.r0 - text_d * 0.7).max(0.2);
-        let pos = Vec3::new(r * mid.cos(), arc.y + 0.02, r * mid.sin());
+        let pos = Vec3::new(r * mid.cos(), wire_top + 0.03, r * mid.sin());
         spawn_flat_label(
             commands, meshes, materials, images, &shown, pos, label_yaw(mid), text_w, text_d,
             [255, 255, 255, 255],
