@@ -575,15 +575,14 @@ fn spawn_screen_label(
     translation: Vec3,
     scale: Vec3,
 ) {
-    let shown: String = geom.name.chars().take(48).collect();
-    let top_w = scale.x * (1.0 - 2.0 * geom.slant_x) * 0.8125;
-    let top_d = scale.z * (1.0 - 2.0 * geom.slant_y) * 0.382;
+    let shown: String = geom.name.chars().take(24).collect();
+    let (width, depth) = fit_label(scale.x * 0.72, scale.z * 0.5, shown.chars().count());
     if shown.is_empty() {
         return;
     }
     let center = Vec3::new(translation.x, translation.y + scale.y * 0.5 + 0.02, translation.z);
     spawn_flat_label(
-        commands, meshes, materials, images, &shown, center, geom.yaw, top_w, top_d,
+        commands, meshes, materials, images, &shown, center, label_yaw(geom.yaw), width, depth,
         [10, 10, 14, 255],
     );
 }
@@ -597,21 +596,34 @@ fn spawn_label(
     translation: Vec3,
     scale: Vec3,
 ) {
-    let shown: String = geom.name.chars().take(48).collect();
-    let top_w = scale.x * (1.0 - 2.0 * geom.slant_x) * 0.875;
-    let top_d = scale.z * (1.0 - 2.0 * geom.slant_y) * 0.382;
+    let shown: String = geom.name.chars().take(24).collect();
+    let (width, depth) = fit_label(scale.x * 0.72, scale.z * 0.5, shown.chars().count());
     if shown.is_empty() {
         return;
     }
     let center = Vec3::new(translation.x, translation.y + scale.y * 0.5 + 0.02, translation.z);
     spawn_flat_label(
-        commands, meshes, materials, images, &shown, center, geom.yaw, top_w, top_d,
+        commands, meshes, materials, images, &shown, center, label_yaw(geom.yaw), width, depth,
         [12, 12, 16, 255],
     );
 }
 
-/// A quad on the face, with the name rasterized into it.
-/// Text2d does not draw in a 3D camera, so this is a mesh.
+/// Keep the bitmap's shape. A long name shrinks instead of being squashed.
+fn fit_label(max_w: f32, max_d: f32, chars: usize) -> (f32, f32) {
+    let aspect = chars.max(1) as f32;
+    let mut width = max_w;
+    let mut depth = width / aspect;
+    if depth > max_d {
+        depth = max_d;
+        width = depth * aspect;
+    }
+    (width.max(0.02), depth.max(0.02))
+}
+
+/// String runs across the view, letter height points back toward the center.
+fn label_yaw(theta: f32) -> f32 {
+    (-theta.cos()).atan2(-theta.sin())
+}
 fn spawn_flat_label(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
@@ -726,14 +738,15 @@ fn spawn_arc(
         // treev_apply_label, platform case: white, just inside the inner
         // edge, lying on the wire in front of the platform.
         let mid = (arc.theta0 + arc.theta1) * 0.5;
-        let depth = (arc.r1 - arc.r0).abs().max(0.3);
-        let text_d = (depth * 0.42).clamp(0.35, 1.8);
-        let r = (arc.r0 - text_d * 0.55).max(0.2);
-        let text_w = (r * (arc.theta1 - arc.theta0).abs() * 0.85).max(text_d * 2.2);
-        let pos = Vec3::new(r * mid.cos(), arc.y + 0.03, r * mid.sin());
-        let shown: String = arc.name.chars().take(32).collect();
+        let depth = (arc.r1 - arc.r0).abs().max(0.2);
+        let shown: String = arc.name.chars().take(24).collect();
+        let max_d = (depth * 0.16).clamp(0.12, 0.45);
+        let arc_len = arc.r0 * (arc.theta1 - arc.theta0).abs() * 0.7;
+        let (text_w, text_d) = fit_label(arc_len.max(max_d * 2.0), max_d, shown.chars().count());
+        let r = arc.r0 + text_d * 0.8;
+        let pos = Vec3::new(r * mid.cos(), arc.y + arc.height + 0.03, r * mid.sin());
         spawn_flat_label(
-            commands, meshes, materials, images, &shown, pos, mid, text_w, text_d,
+            commands, meshes, materials, images, &shown, pos, label_yaw(mid), text_w, text_d,
             [255, 255, 255, 255],
         );
     }
