@@ -34,8 +34,9 @@ struct AppState {
     hovered: Option<PathBuf>,
     /// color.c COLOR_BY_TIMESTAMP. Files take a rainbow, directories keep type.
     color_age: bool,
-    /// World height the TreeV camera should be able to see.
+    /// World size the TreeV camera should fit, and the point it looks at.
     frame: f32,
+    focus: Vec3,
     frame_pending: bool,
     /// Rebuild the meshes. Not Bevy's change flag: writing geometry
     /// onto the tree must not schedule another rebuild by itself.
@@ -111,6 +112,7 @@ fn main() {
                     hovered: None,
                     color_age: true,
                     frame: 36.0,
+                    focus: Vec3::ZERO,
                     frame_pending: true,
                     dirty: true,
                 })
@@ -171,9 +173,12 @@ fn apply_frame(mut state: ResMut<AppState>, mut orbits: Query<&mut OrbitCamera>)
     }
     let Ok(mut orbit) = orbits.get_single_mut() else { return; };
     // camera.c frames TreeV with the tallest leaf, not just the footprint.
-    let dist = (state.frame * 1.15).clamp(18.0, 700.0);
+    let dist = (state.frame * 1.6).clamp(4.0, 80.0);
+    orbit.focus = state.focus;
     orbit.distance = dist;
-    orbit.pitch = -0.65;
+    // Initial TreeV pitch is overhead. A shallow pitch turns the platform
+    // into the stick in front of the core ring.
+    orbit.pitch = -1.35;
     orbit.fly = None;
 }
 
@@ -431,7 +436,12 @@ fn spawn_geometry(
         spawn_arc(commands, meshes, materials, &arc);
     }
 
-    state.frame = top.max(8.0);
+    state.frame = if matches!(state.mode, layout::LayoutMode::TreeV) {
+        result.span
+    } else {
+        top.max(8.0)
+    };
+    state.focus = Vec3::new(result.focus[0], result.focus[1], result.focus[2]);
 }
 
 /// Unit box (-0.5..0.5) with the top face inset. Scale it by the block size.

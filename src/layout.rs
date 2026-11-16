@@ -90,8 +90,10 @@ pub struct LayoutResult {
     pub boxes: Vec<BoxGeom>,
     pub lines: Vec<LineGeom>,
     pub arcs: Vec<ArcGeom>,
-    #[allow(dead_code)]
+    /// Camera distance for the first TreeV view. MapV ignores it.
     pub span: f32,
+    /// World point the TreeV camera looks at. MapV leaves this at the origin.
+    pub focus: [f32; 3],
 }
 
 pub fn layout(root: &mut Node, mode: LayoutMode) -> LayoutResult {
@@ -312,6 +314,7 @@ fn emit_mapv(root: &Node, view: &View, span: (u64, u64)) -> LayoutResult {
             lines: Vec::new(),
             arcs: Vec::new(),
             span: view.target_width as f32,
+            focus: [0.0, 0.0, 0.0],
         };
     };
 
@@ -333,6 +336,7 @@ fn emit_mapv(root: &Node, view: &View, span: (u64, u64)) -> LayoutResult {
         lines: Vec::new(),
         arcs: Vec::new(),
         span: view.target_width as f32,
+        focus: [0.0, 0.0, 0.0],
     }
 }
 
@@ -548,12 +552,36 @@ pub fn treev_layout(root: &Node, span: (u64, u64)) -> LayoutResult {
         a.height = (a.height as f64 * scale) as f32;
     }
 
+    let (focus, span) = treev_frame(&arcs, &boxes);
     LayoutResult {
         boxes,
         lines: Vec::new(),
         arcs,
-        span: (36.0_f64) as f32,
+        span,
+        focus,
     }
+}
+
+/// First TreeV view looks at the root platform, not the empty core.
+/// camera.c puts the target on that platform and looks straight down.
+fn treev_frame(arcs: &[ArcGeom], boxes: &[BoxGeom]) -> ([f32; 3], f32) {
+    let Some(platform) = arcs.iter().find(|arc| !arc.branch) else {
+        return ([0.0, 0.0, 0.0], 36.0);
+    };
+    let r = (platform.r0 + platform.r1) * 0.5;
+    let theta = (platform.theta0 + platform.theta1) * 0.5;
+    let fx = r * theta.cos();
+    let fz = r * theta.sin();
+    let fy = platform.y + platform.height * 0.5;
+    let mut reach = (platform.r1 - platform.r0).abs();
+    reach = reach.max(r * (platform.theta1 - platform.theta0).abs());
+    for box_geom in boxes {
+        let dx = box_geom.x - fx;
+        let dz = box_geom.y - fz;
+        let dist = (dx * dx + dz * dz).sqrt() + box_geom.width.max(box_geom.depth);
+        reach = reach.max(dist);
+    }
+    ([fx, fy, fz], reach.max(platform.height).max(1.0))
 }
 
 fn tv_half_deg(width: f64, radius: f64) -> f64 {
