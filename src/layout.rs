@@ -142,9 +142,19 @@ fn file_age(node: &Node, oldest: u64, newest: u64) -> Option<f32> {
 }
 
 fn represented_bytes(node: &Node) -> f64 {
-    // fsv: max(256, own size) + subtree-without-self for directories.
-    // Our subtree_size already includes own size.
-    (node.subtree_size.max(node.size).max(256)) as f64
+    // TreeV leaf height. subtree_size already includes this node.
+    (node.subtree_size.max(node.size).max(64)) as f64
+}
+
+/// MapV block size. A child is at least 256 bytes. A directory adds the
+/// subtree without counting itself twice.
+fn map_child_bytes(node: &Node) -> f64 {
+    let own = node.size.max(256) as f64;
+    if node.is_dir() {
+        own + node.subtree_size.saturating_sub(node.size) as f64
+    } else {
+        own
+    }
 }
 
 fn side_slant(kind: &NodeType) -> f64 {
@@ -158,7 +168,9 @@ fn side_slant(kind: &NodeType) -> f64 {
 
 /// Fill `node.map` for the root and every descendant. Original units only.
 pub fn build_mapv(root: &mut Node) {
-    let bytes = represented_bytes(root).max(1.0);
+    // mapv_init sizes the root from the real byte count. The 256-byte floor
+    // applies to children only.
+    let bytes = (root.subtree_size.max(1)) as f64;
     let root_d = (bytes / ROOT_ASPECT).sqrt();
     let root_w = ROOT_ASPECT * root_d;
     root.map = Some(MapGeom {
@@ -193,15 +205,8 @@ fn pack_children(dir: &mut Node) {
     }
 }
 
-/// Squarified MapV layout.
-///
-/// fsv's `mapv_init_recursive` always lays a row across the full width and
-/// only looks at the newest block. A small folder already in that row is
-/// then crushed when a larger sibling deepens it. The author left a note
-/// ("write layout optimization routine sometime") and never did. This is
-/// that pass: largest first, row along the short side, and a block is not
-/// added when it makes the row's worst aspect worse. Border, slant inset
-/// and heights stay the original numbers.
+/// `mapv_init_recursive`. Rows across the full width, children in scan order.
+/// The C source leaves the "optimize the layout" pass empty.
 fn pack_rects(dir: &Node) -> Vec<Placed> {
     let Some(parent) = dir.map else {
         return Vec::new();
@@ -212,187 +217,91 @@ fn pack_rects(dir: &Node) -> Vec<Placed> {
 
     let mut dims_x = parent.c1x - parent.c0x;
     let mut dims_y = parent.c1y - parent.c0y;
-    let inset_x = parent.height.min(DIR_SLANT * dims_x);
-    let inset_y = parent.height.min(DIR_SLANT * dims_y);
-    dims_x -= 2.0 * inset_x;
-    dims_y -= 2.0 * inset_y;
+    dims_x -= 2.0 * parent.height.min(DIR_SLANT * dims_x);
+    dims_y -= 2.0 * parent.height.min(DIR_SLANT * dims_y);
     if dims_x <= 1.0 || dims_y <= 1.0 {
         return Vec::new();
     }
-
-    let nominal_border = (BORDER_PROPORTION * (dims_x * dims_y).sqrt())
-        .min(dims_x.min(dims_y) / 3.0);
-    dims_x -= nominal_border;
-    dims_y -= nominal_border;
+    let nominal = (BORDER_PROPORTION * (dims_x * dims_y).sqrt()).min(dims_x.min(dims_y) / 3.0);
+    dims_x -= nominal;
+    dims_y -= nominal;
     if dims_x <= 1.0 || dims_y <= 1.0 {
         return Vec::new();
     }
     let dir_area = dims_x * dims_y;
-    let cx = (parent.c0x + parent.c1x) * 0.5;
-    let cy = (parent.c0y + parent.c1y) * 0.5;
 
     let mut blocks: Vec<Block> = Vec::with_capacity(dir.children.len());
     let mut total_area = 0.0;
     for (index, child) in dir.children.iter().enumerate() {
-        let bytes = represented_bytes(child);
-        let k = bytes.sqrt() + nominal_border;
-        let area = k * k;
+        let bytes = map_child_bytes(child);
+        let area = (bytes.sqrt() + nominal).powi(2);
         total_area += area;
         blocks.push(Block { index, area, bytes });
     }
     if total_area <= 0.0 {
         return Vec::new();
     }
-    let scale_factor = dir_area / total_area;
+    let scale = dir_area / total_area;
     for block in &mut blocks {
-        block.area *= scale_factor;
+        block.area *= scale;
     }
-    blocks.sort_by(|a, b| b.area.total_cmp(&a.area).then(a.index.cmp(&b.index)));
 
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    let mut row: Vec<usize> = Vec::new();
+    let mut row_area = 0.0;
+    for (n, block) in blocks.iter().enumerate() {
+        if row.is_empty() {
+            row_area = 0.0;
+        }
+        row.push(n);
+        row_area += block.area;
+        let by = row_area / dims_x;
+        let bx = block.area / by;
+        if bx / by < 1.0 {
+            rows.push(std::mem::take(&mut row));
+            row_area = 0.0;
+        }
+    }
+    if !row.is_empty() {
+        rows.push(row);
+    }
+
+    let cx = (parent.c0x + parent.c1x) * 0.5;
+    let cy = (parent.c0y + parent.c1y) * 0.5;
+    let mut pos_y = cy + 0.5 * dims_y;
     let mut placed = Vec::with_capacity(blocks.len());
-    squarify(
-        &blocks,
-        cx - 0.5 * dims_x,
-        cy - 0.5 * dims_y,
-        cx + 0.5 * dims_x,
-        cy + 0.5 * dims_y,
-        scale_factor,
-        dir,
-        &mut placed,
-    );
-    placed
-}
-
-fn row_worst(blocks: &[Block], side: f64) -> f64 {
-    let sum: f64 = blocks.iter().map(|b| b.area).sum();
-    if sum <= 0.0 || side <= 0.0 {
-        return f64::MAX;
-    }
-    let thick = sum / side;
-    if thick <= 0.0 {
-        return f64::MAX;
-    }
-    let mut worst = 1.0;
-    for block in blocks {
-        if block.area <= 0.0 {
-            continue;
-        }
-        let len = block.area / thick;
-        let aspect = (len / thick).max(thick / len);
-        if aspect > worst {
-            worst = aspect;
-        }
-    }
-    worst
-}
-
-fn squarify(
-    mut blocks: &[Block],
-    mut x0: f64,
-    mut y0: f64,
-    x1: f64,
-    y1: f64,
-    scale: f64,
-    dir: &Node,
-    out: &mut Vec<Placed>,
-) {
-    while !blocks.is_empty() {
-        let w = x1 - x0;
-        let h = y1 - y0;
-        if w <= 1.0 || h <= 1.0 {
-            break;
-        }
-        // Strip runs along the short side, same rule as a squarified treemap.
-        let side = w.min(h);
-        let along_y = w >= h;
-        let mut row_len = 1;
-        let mut prev = row_worst(&blocks[..1], side);
-        while row_len < blocks.len() {
-            let next = row_worst(&blocks[..=row_len], side);
-            if next <= prev {
-                prev = next;
-                row_len += 1;
+    for row in &rows {
+        let area: f64 = row.iter().map(|&i| blocks[i].area).sum();
+        let by = area / dims_x;
+        let mut pos_x = cx + 0.5 * dims_x;
+        for &i in row {
+            let block = &blocks[i];
+            let bx = block.area / by;
+            let node_area = scale * block.bytes;
+            let k = bx + by;
+            let disc = k * k - 4.0 * (block.area - node_area);
+            let border = if disc > 0.0 {
+                0.25 * (k - disc.sqrt())
             } else {
-                break;
-            }
+                0.0
+            };
+            let child = &dir.children[block.index];
+            let height = if child.is_dir() { DIR_HEIGHT } else { LEAF_HEIGHT };
+            placed.push(Placed {
+                index: block.index,
+                geom: MapGeom {
+                    c0x: pos_x - bx + border,
+                    c0y: pos_y - by + border,
+                    c1x: pos_x - border,
+                    c1y: pos_y - border,
+                    height,
+                },
+            });
+            pos_x -= bx;
         }
-        let row_area: f64 = blocks[..row_len].iter().map(|b| b.area).sum();
-        let room = if along_y { w } else { h };
-        let thick = (row_area / side).clamp(0.0, room);
-        if thick <= 1.0 {
-            break;
-        }
-        if along_y {
-            let mut cursor = y0;
-            for block in &blocks[..row_len] {
-                let len = if thick > 0.0 { block.area / thick } else { 0.0 };
-                let end = (cursor + len).min(y1);
-                place_block(block, x0, cursor, x0 + thick, end, scale, dir, out);
-                cursor = end;
-            }
-            x0 += thick;
-        } else {
-            let mut cursor = x0;
-            for block in &blocks[..row_len] {
-                let len = if thick > 0.0 { block.area / thick } else { 0.0 };
-                let end = (cursor + len).min(x1);
-                place_block(block, cursor, y0, end, y0 + thick, scale, dir, out);
-                cursor = end;
-            }
-            y0 += thick;
-        }
-        blocks = &blocks[row_len..];
+        pos_y -= by;
     }
-}
-
-fn place_block(
-    block: &Block,
-    x0: f64,
-    y0: f64,
-    x1: f64,
-    y1: f64,
-    scale: f64,
-    dir: &Node,
-    out: &mut Vec<Placed>,
-) {
-    let bw = x1 - x0;
-    let bd = y1 - y0;
-    if bw < 1.0 || bd < 1.0 {
-        return;
-    }
-    let node_area = scale * block.bytes;
-    let kdim = bw + bd;
-    let inner = (bw * bd) - node_area;
-    let disc = kdim * kdim - 4.0 * inner;
-    let mut border = if disc > 0.0 {
-        0.25 * (kdim - disc.sqrt())
-    } else {
-        0.0
-    };
-    if !border.is_finite() || border < 0.0 {
-        border = 0.0;
-    }
-    border = border.min((bw.min(bd) * 0.45).max(0.0));
-    if bw - 2.0 * border < 1.0 || bd - 2.0 * border < 1.0 {
-        border = border.min(bw.min(bd) * 0.1);
-    }
-
-    let child = &dir.children[block.index];
-    let height = if child.is_dir() {
-        DIR_HEIGHT
-    } else {
-        LEAF_HEIGHT
-    };
-    out.push(Placed {
-        index: block.index,
-        geom: MapGeom {
-            c0x: x0 + border,
-            c0y: y0 + border,
-            c1x: x1 - border,
-            c1y: y1 - border,
-            height,
-        },
-    });
+    placed
 }
 
 fn emit_mapv(root: &Node, view: &View, span: (u64, u64)) -> LayoutResult {

@@ -260,7 +260,6 @@ fn find<'a>(node: &'a Node, name: &str) -> Option<&'a Node> {
 }
 
 #[test]
-#[ignore = "step 3: current layout does not match the original numbers yet"]
 fn current_layout_against_golden() {
     let mut tree = fixture();
     layout::build_mapv(&mut tree);
