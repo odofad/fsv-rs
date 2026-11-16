@@ -41,6 +41,8 @@ struct AppState {
     frame: f32,
     focus: Vec3,
     frame_pending: bool,
+    /// Clicked node. The fly starts after the rebuild, at the new spot.
+    fly_to: Option<PathBuf>,
     /// Rebuild the meshes. Not Bevy's change flag: writing geometry
     /// onto the tree must not schedule another rebuild by itself.
     dirty: bool,
@@ -117,10 +119,11 @@ fn main() {
                     frame: 36.0,
                     focus: Vec3::ZERO,
                     frame_pending: true,
+                    fly_to: None,
                     dirty: true,
                 })
                 .add_systems(Startup, setup)
-                .add_systems(Update, (orbit_camera, hover_pick, click_expand, face_labels, side_panel, rebuild_layout, apply_frame))
+                .add_systems(Update, (orbit_camera, hover_pick, click_expand, face_labels, side_panel, rebuild_layout, apply_frame, fly_to_opened.after(rebuild_layout)))
                 .run();
         }
         Err(e) => {
@@ -311,8 +314,8 @@ fn begin_fly(orbit: &mut OrbitCamera, translation: Vec3, scale: Vec3, is_dir: bo
     let end_yaw = theta.cos().atan2(theta.sin());
 
     let travel = orbit.focus.distance(focus);
-    let duration = (0.55 + travel * 0.06).clamp(0.55, 1.6);
-    let swing = travel > 3.0 * orbit.distance.max(end_dist);
+    let duration = (1.8 + travel * 0.18).clamp(2.2, 4.5);
+    let swing = is_dir || travel > 3.0 * orbit.distance.max(end_dist);
     let mid_dist = if swing {
         1.15 * end_dist.max(travel * 0.65)
     } else {
@@ -942,8 +945,7 @@ fn age_color(age: f32) -> Color {
 fn click_expand(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
-    cameras: Query<(&Camera, &GlobalTransform, &Projection)>,
-    mut orbits: Query<&mut OrbitCamera>,
+    cameras: Query<(&Camera, &GlobalTransform)>,
     pickables: Query<(&Pickable, &Transform)>,
     mut state: ResMut<AppState>,
     mut egui: EguiContexts,
@@ -958,7 +960,7 @@ fn click_expand(
 
     let Ok(window) = windows.get_single() else { return; };
     let Some(cursor) = window.cursor_position() else { return; };
-    let Ok((camera, cam_transform, projection)) = cameras.get_single() else { return; };
+    let Ok((camera, cam_transform)) = cameras.get_single() else { return; };
 
     let Some(ray) = camera.viewport_to_world(cam_transform, cursor).ok() else { return; };
 
@@ -979,16 +981,9 @@ fn click_expand(
         }
     }
 
-    let Some((_, path, translation, scale)) = best else { return; };
-    let is_dir = is_dir_path(&state.root, &path);
-    let fov = match projection {
-        Projection::Perspective(p) => p.fov,
-        Projection::Orthographic(_) => std::f32::consts::FRAC_PI_4,
-    };
-    if let Ok(mut orbit) = orbits.get_single_mut() {
-        begin_fly(&mut orbit, translation, scale, is_dir, fov);
-    }
+    let Some((_, path, _, _)) = best else { return; };
     state.selected = Some(path.clone());
+    state.fly_to = Some(path.clone());
     state.dirty = true;
     toggle_expanded(&mut state.root, &path);
 }
@@ -1051,6 +1046,39 @@ fn rebuild_layout(
     }
     spawn_geometry(&mut commands, &mut state, &mut meshes, &mut materials, &mut images);
     state.dirty = false;
+}
+
+/// After the folder has opened and the meshes exist, glide to it.
+fn fly_to_opened(
+    mut state: ResMut<AppState>,
+    mut orbits: Query<&mut OrbitCamera>,
+    pickables: Query<(&Pickable, &Transform)>,
+    projections: Query<&Projection>,
+) {
+    if state.dirty {
+        return;
+    }
+    let Some(path) = state.fly_to.clone() else { return; };
+    let mut best: Option<(f32, Vec3, Vec3)> = None;
+    for (pick, transform) in &pickables {
+        if pick.path != path {
+            continue;
+        }
+        let area = transform.scale.x * transform.scale.z;
+        if best.as_ref().map_or(true, |(a, _, _)| area > *a) {
+            best = Some((area, transform.translation, transform.scale));
+        }
+    }
+    let Some((_, translation, scale)) = best else { return; };
+    state.fly_to = None;
+    let is_dir = is_dir_path(&state.root, &path);
+    let fov = match projections.get_single() {
+        Ok(Projection::Perspective(p)) => p.fov,
+        _ => std::f32::consts::FRAC_PI_4,
+    };
+    if let Ok(mut orbit) = orbits.get_single_mut() {
+        begin_fly(&mut orbit, translation, scale, is_dir, fov);
+    }
 }
 
 fn toggle_birdseye(orbit: &mut OrbitCamera, root_width: f32, fov: f32) {
