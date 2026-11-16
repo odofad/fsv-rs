@@ -10,9 +10,12 @@ use std::path::{PathBuf, Path};
 use clap::Parser;
 use bevy::input::mouse::MouseScrollUnit;
 use bevy::prelude::*;
+use bevy::image::{Image, ImageSampler};
 use bevy::render::mesh::{Indices, PrimitiveTopology};
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
+use font8x8::UnicodeFonts;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -132,6 +135,7 @@ fn setup(
     mut state: ResMut<AppState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     commands.insert_resource(AmbientLight {
         color: Color::WHITE,
@@ -148,7 +152,7 @@ fn setup(
         Transform::from_xyz(8.0, 24.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
-    spawn_geometry(&mut commands, &mut state, &mut meshes, &mut materials);
+    spawn_geometry(&mut commands, &mut state, &mut meshes, &mut materials, &mut images);
     state.dirty = false;
 
     let tree = matches!(state.mode, layout::LayoutMode::TreeV);
@@ -360,6 +364,7 @@ fn spawn_geometry(
     state: &mut AppState,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
+    images: &mut ResMut<Assets<Image>>,
 ) {
     let result = layout::layout(&mut state.root, state.mode);
     let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
@@ -444,9 +449,9 @@ fn spawn_geometry(
 
         if geom.label && !geom.name.is_empty() {
             if matches!(state.mode, layout::LayoutMode::TreeV) {
-                spawn_label(commands, &geom, translation, scale);
+                spawn_label(commands, meshes, materials, images, &geom, translation, scale);
             } else {
-                spawn_screen_label(commands, &geom, translation, scale);
+                spawn_screen_label(commands, meshes, materials, images, &geom, translation, scale);
             }
         }
 
@@ -467,7 +472,7 @@ fn spawn_geometry(
             Some(path) => arc.path == *path,
             None => arc.path == root_path,
         };
-        spawn_arc(commands, meshes, materials, &arc);
+        spawn_arc(commands, meshes, materials, images, &arc);
         if current && !arc.branch {
             spawn_arc_cursor(commands, cube.clone(), cursor_mat.clone(), &arc);
         }
@@ -561,80 +566,133 @@ struct FaceLabel {
     axis_v: Vec3,
 }
 
-fn spawn_screen_label(commands: &mut Commands, geom: &layout::BoxGeom, translation: Vec3, scale: Vec3) {
+fn spawn_screen_label(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    images: &mut ResMut<Assets<Image>>,
+    geom: &layout::BoxGeom,
+    translation: Vec3,
+    scale: Vec3,
+) {
     let shown: String = geom.name.chars().take(48).collect();
     let top_w = scale.x * (1.0 - 2.0 * geom.slant_x) * 0.8125;
     let top_d = scale.z * (1.0 - 2.0 * geom.slant_y) * 0.382;
-    if top_w < 0.02 || top_d < 0.02 || shown.is_empty() {
+    if shown.is_empty() {
         return;
     }
-    let yaw_q = Quat::from_rotation_y(geom.yaw);
-    commands.spawn((
-        FaceLabel {
-            name: shown,
-            center: Vec3::new(translation.x, translation.y + scale.y * 0.5 + 0.03, translation.z),
-            axis_u: yaw_q * Vec3::new(top_w, 0.0, 0.0),
-            axis_v: yaw_q * Vec3::new(0.0, 0.0, top_d),
-        },
-        MapPiece,
-    ));
+    let center = Vec3::new(translation.x, translation.y + scale.y * 0.5 + 0.02, translation.z);
+    spawn_flat_label(
+        commands, meshes, materials, images, &shown, center, geom.yaw, top_w, top_d,
+        [10, 10, 14, 255],
+    );
 }
 
-fn spawn_label(commands: &mut Commands, geom: &layout::BoxGeom, translation: Vec3, scale: Vec3) {
-    // treev_apply_label / mapv_apply_label: black, on the top face.
-    // Width is most of the block. Depth is (2 - phi) of the block.
+fn spawn_label(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    images: &mut ResMut<Assets<Image>>,
+    geom: &layout::BoxGeom,
+    translation: Vec3,
+    scale: Vec3,
+) {
     let shown: String = geom.name.chars().take(48).collect();
     let top_w = scale.x * (1.0 - 2.0 * geom.slant_x) * 0.875;
     let top_d = scale.z * (1.0 - 2.0 * geom.slant_y) * 0.382;
     if shown.is_empty() {
         return;
     }
-    let center = Vec3::new(translation.x, translation.y + scale.y * 0.5 + 0.012, translation.z);
-    spawn_flat_label(commands, &shown, center, geom.yaw, top_w, top_d, Color::srgb(0.02, 0.02, 0.03));
+    let center = Vec3::new(translation.x, translation.y + scale.y * 0.5 + 0.02, translation.z);
+    spawn_flat_label(
+        commands, meshes, materials, images, &shown, center, geom.yaw, top_w, top_d,
+        [12, 12, 16, 255],
+    );
 }
 
-/// Text lying on the ground, readable from outside the ring.
-/// Text2d sits in its local XY plane. Tip it onto XZ, then yaw it.
+/// A quad on the face, with the name rasterized into it.
+/// Text2d does not draw in a 3D camera, so this is a mesh.
 fn spawn_flat_label(
     commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    images: &mut ResMut<Assets<Image>>,
     text: &str,
     center: Vec3,
     yaw: f32,
     width: f32,
     depth: f32,
-    color: Color,
+    rgba: [u8; 4],
 ) {
     if text.is_empty() || width < 0.04 || depth < 0.02 {
         return;
     }
-    let font_size = 64.0;
-    let px_w = (text.chars().count().max(1) as f32) * font_size * 0.55;
-    let sx = width / px_w;
-    let sy = depth / font_size;
-    // 180 around Z flips the word so it reads from the outer side.
-    let rotation = Quat::from_rotation_y(-yaw - PI * 0.5)
-        * Quat::from_rotation_z(PI)
-        * Quat::from_rotation_x(-PI * 0.5);
+    let image = name_image(text, rgba);
     commands.spawn((
-        Text2d::new(text.to_string()),
-        TextFont {
-            font_size,
+        Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::new(width * 0.5, depth * 0.5)))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color_texture: Some(images.add(image)),
+            base_color: Color::WHITE,
+            alpha_mode: AlphaMode::Blend,
+            unlit: true,
+            cull_mode: None,
             ..default()
-        },
-        TextColor(color),
+        })),
         Transform {
             translation: center,
-            rotation,
-            scale: Vec3::new(sx, sy, 1.0),
+            rotation: Quat::from_rotation_y(yaw),
+            ..default()
         },
         MapPiece,
     ));
+}
+
+fn name_image(text: &str, rgba: [u8; 4]) -> Image {
+    let chars: Vec<char> = text.chars().take(40).collect();
+    let n = chars.len().max(1) as u32;
+    let scale = 4u32;
+    let cell = 8 * scale;
+    let width = n * cell;
+    let height = cell;
+    let mut data = vec![0u8; (width * height * 4) as usize];
+    for (i, ch) in chars.iter().enumerate() {
+        let glyph = font8x8::BASIC_FONTS.get(*ch).unwrap_or([0u8; 8]);
+        for (row, bits) in glyph.iter().enumerate() {
+            for col in 0..8u32 {
+                if bits & (1 << col) == 0 {
+                    continue;
+                }
+                for sy in 0..scale {
+                    for sx in 0..scale {
+                        let x = i as u32 * cell + col * scale + sx;
+                        let y = row as u32 * scale + sy;
+                        let idx = ((y * width + x) * 4) as usize;
+                        data[idx..idx + 4].copy_from_slice(&rgba);
+                    }
+                }
+            }
+        }
+    }
+    let mut image = Image::new(
+        Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+    image.sampler = ImageSampler::nearest();
+    image
 }
 
 fn spawn_arc(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
+    images: &mut ResMut<Assets<Image>>,
     arc: &layout::ArcGeom,
 ) {
     let (mesh, translation, scale) = arc_mesh(arc);
@@ -648,6 +706,7 @@ fn spawn_arc(
         Mesh3d(meshes.add(mesh)),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: color,
+            unlit: true,
             perceptual_roughness: 0.7,
             ..default()
         })),
@@ -673,7 +732,10 @@ fn spawn_arc(
         let text_w = (r * (arc.theta1 - arc.theta0).abs() * 0.85).max(text_d * 2.2);
         let pos = Vec3::new(r * mid.cos(), arc.y + 0.03, r * mid.sin());
         let shown: String = arc.name.chars().take(32).collect();
-        spawn_flat_label(commands, &shown, pos, mid, text_w, text_d, Color::WHITE);
+        spawn_flat_label(
+            commands, meshes, materials, images, &shown, pos, mid, text_w, text_d,
+            [255, 255, 255, 255],
+        );
     }
 }
 
@@ -964,6 +1026,7 @@ fn rebuild_layout(
     mut state: ResMut<AppState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     existing: Query<Entity, With<MapPiece>>,
 ) {
     if !state.dirty {
@@ -972,7 +1035,7 @@ fn rebuild_layout(
     for e in &existing {
         commands.entity(e).despawn();
     }
-    spawn_geometry(&mut commands, &mut state, &mut meshes, &mut materials);
+    spawn_geometry(&mut commands, &mut state, &mut meshes, &mut materials, &mut images);
     state.dirty = false;
 }
 
