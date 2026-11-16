@@ -582,7 +582,7 @@ fn spawn_screen_label(
     }
     let center = Vec3::new(translation.x, translation.y + scale.y * 0.5 + 0.02, translation.z);
     spawn_flat_label(
-        commands, meshes, materials, images, &shown, center, label_yaw(geom.yaw), width, depth,
+        commands, meshes, materials, images, &shown, center, geom.yaw, width, depth,
         [10, 10, 14, 255],
     );
 }
@@ -601,9 +601,9 @@ fn spawn_label(
     if shown.is_empty() {
         return;
     }
-    let center = Vec3::new(translation.x, translation.y + scale.y * 0.5 + 0.02, translation.z);
+    let center = Vec3::new(translation.x, translation.y + scale.y * 0.5 + 0.006, translation.z);
     spawn_flat_label(
-        commands, meshes, materials, images, &shown, center, label_yaw(geom.yaw), width, depth,
+        commands, meshes, materials, images, &shown, center, geom.yaw, width, depth,
         [12, 12, 16, 255],
     );
 }
@@ -738,13 +738,12 @@ fn spawn_arc(
         // treev_apply_label, platform case: white, just inside the inner
         // edge, lying on the wire in front of the platform.
         let mid = (arc.theta0 + arc.theta1) * 0.5;
-        let depth = (arc.r1 - arc.r0).abs().max(0.2);
         let shown: String = arc.name.chars().take(24).collect();
-        let max_d = (depth * 0.16).clamp(0.12, 0.45);
-        let arc_len = arc.r0 * (arc.theta1 - arc.theta0).abs() * 0.7;
-        let (text_w, text_d) = fit_label(arc_len.max(max_d * 2.0), max_d, shown.chars().count());
-        let r = arc.r0 + text_d * 0.8;
-        let pos = Vec3::new(r * mid.cos(), arc.y + arc.height + 0.03, r * mid.sin());
+        let max_d = 0.28;
+        let (text_w, text_d) = fit_label(max_d * shown.chars().count() as f32, max_d, shown.chars().count());
+        // Just in front of the platform, on the wire, not on the slab.
+        let r = (arc.r0 - text_d * 0.7).max(0.2);
+        let pos = Vec3::new(r * mid.cos(), arc.y + 0.02, r * mid.sin());
         spawn_flat_label(
             commands, meshes, materials, images, &shown, pos, label_yaw(mid), text_w, text_d,
             [255, 255, 255, 255],
