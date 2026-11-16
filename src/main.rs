@@ -983,10 +983,20 @@ fn click_expand(
     }
 
     let Some((_, path, _, _)) = best else { return; };
+    let open_dir = is_expanded_dir(&state.root, &path);
     state.selected = Some(path.clone());
     state.fly_to = Some(path.clone());
     state.dirty = true;
-    toggle_expanded(&mut state.root, &path);
+    if !open_dir {
+        toggle_expanded(&mut state.root, &path);
+    }
+}
+
+fn is_expanded_dir(node: &node::Node, path: &Path) -> bool {
+    if node.path == path {
+        return node.is_dir() && node.expanded;
+    }
+    node.children.iter().any(|child| is_expanded_dir(child, path))
 }
 
 fn is_dir_path(node: &node::Node, path: &Path) -> bool {
