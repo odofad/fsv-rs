@@ -742,12 +742,13 @@ fn spawn_arc(
         // edge, lying on the wire in front of the platform.
         let mid = (arc.theta0 + arc.theta1) * 0.5;
         let shown: String = arc.name.chars().take(24).collect();
+        let span = (arc.theta1 - arc.theta0).abs().max(0.05);
         let max_d = 0.28;
-        let (text_w, text_d) = fit_label(max_d * shown.chars().count() as f32, max_d, shown.chars().count());
+        let (text_w, text_d) = fit_label(arc.r0 * span * 0.8, max_d, shown.chars().count());
         // The wire is 48 units tall and the platform is 158.2. Sit the
-        // name on top of the wire, or the bar covers the letters.
+        // name on top of the wire, inside this folder's own wedge.
         let wire_top = arc.y + arc.height * (48.0 / 158.2);
-        let r = (arc.r0 - text_d * 0.7).max(0.2);
+        let r = (arc.r0 - text_d * 0.55).max(0.2);
         let pos = Vec3::new(r * mid.cos(), wire_top + 0.03, r * mid.sin());
         spawn_flat_label(
             commands, meshes, materials, images, &shown, pos, label_yaw(mid), text_w, text_d,
