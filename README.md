@@ -71,6 +71,7 @@ These stay written down so they are not "fixed" by accident.
 - **DiscV.** `discv_gldraw_folder` is still empty upstream. We do not invent the missing half.
 - **Mouse.** Locked. The middle button orbits. The right button slides the view. The wheel zooms, and it does nothing while the pointer is on a panel. The manual dollies with the middle button and opens a menu with the right button. Do not put those back.
 - **A click on a closed folder opens it.** A click on an open folder only flies there. It does not collapse. The manual's left click only selects. Leave this as it is.
+- **Right click on the view still pans.** The context menu is on the list, which is where the manual also puts it. Do not move pan off the right button.
 
 ## Out of scope until the numbers match
 

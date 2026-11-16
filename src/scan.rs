@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use jwalk::WalkDir;
 use crate::node::{Node, NodeType};
@@ -10,14 +11,23 @@ pub fn scan(root: &Path) -> Result<Node, std::io::Error> {
         let entry = entry?;
         let path = entry.path();
 
-        let kind = if entry.file_type().is_dir() {
+        let ft = entry.file_type();
+        let kind = if ft.is_dir() {
             NodeType::Directory
-        } else if entry.file_type().is_symlink() {
+        } else if ft.is_symlink() {
             NodeType::Symlink
-        } else if entry.file_type().is_file() {
+        } else if ft.is_fifo() {
+            NodeType::Fifo
+        } else if ft.is_socket() {
+            NodeType::Socket
+        } else if ft.is_char_device() {
+            NodeType::Char
+        } else if ft.is_block_device() {
+            NodeType::Block
+        } else if ft.is_file() {
             NodeType::File
         } else {
-            NodeType::Other
+            NodeType::Unknown
         };
 
         let metadata = entry.metadata().ok();

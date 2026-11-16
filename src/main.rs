@@ -28,6 +28,13 @@ struct Args {
     treev: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Paint {
+    Type,
+    Age,
+    Wild,
+}
+
 #[derive(Resource)]
 struct AppState {
     root: node::Node,
@@ -35,8 +42,8 @@ struct AppState {
     selected: Option<PathBuf>,
     /// Block under the cursor. Readout only, does not rebuild.
     hovered: Option<PathBuf>,
-    /// color.c COLOR_BY_TIMESTAMP. Files take a rainbow, directories keep type.
-    color_age: bool,
+    /// color.c. Directories keep the type color in every mode.
+    paint: Paint,
     /// World size the TreeV camera should fit, and the point it looks at.
     frame: f32,
     focus: Vec3,
@@ -51,6 +58,13 @@ struct AppState {
     fly_to_place: Option<(Vec3, Vec3)>,
     fly_from_area: f32,
     fly_to_area: f32,
+    /// Nodes the camera has already visited. Back walks this.
+    history: Vec<PathBuf>,
+    backtracking: bool,
+    /// Properties window, from the list's right-click menu.
+    props: Option<PathBuf>,
+    root_input: String,
+    root_error: String,
     /// Directories easing open or closed. TreeV only.
     deploys: Vec<DeployAnim>,
     /// Rebuild the meshes. Not Bevy's change flag: writing geometry
@@ -117,6 +131,7 @@ fn main() {
                 layout::LayoutMode::MapV
             };
 
+            let root_input = root.path.display().to_string();
             App::new()
                 .add_plugins(DefaultPlugins)
                 .add_plugins(EguiPlugin)
@@ -125,7 +140,7 @@ fn main() {
                     mode,
                     selected: None,
                     hovered: None,
-                    color_age: false,
+                    paint: Paint::Type,
                     frame: 36.0,
                     focus: Vec3::ZERO,
                     frame_pending: true,
@@ -137,6 +152,11 @@ fn main() {
                     fly_to_place: None,
                     fly_from_area: 0.0,
                     fly_to_area: 0.0,
+                    history: Vec::new(),
+                    backtracking: false,
+                    props: None,
+                    root_input,
+                    root_error: String::new(),
                     deploys: Vec::new(),
                     dirty: true,
                 })
@@ -417,13 +437,13 @@ fn spawn_geometry(
     let mut top = result.span;
     for geom in result.boxes {
         top = top.max(geom.z + geom.height * 0.5);
-        let mut color = if state.color_age {
-            match geom.age {
+        let mut color = match state.paint {
+            Paint::Age => match geom.age {
                 Some(age) => age_color(age),
                 None => color_for_kind(&geom.kind),
-            }
-        } else {
-            color_for_kind(&geom.kind)
+            },
+            Paint::Wild => wild_color(&geom.name, &geom.kind),
+            Paint::Type => color_for_kind(&geom.kind),
         };
         if geom.floor {
             let [r, g, b, a] = color.to_srgba().to_f32_array();
@@ -1005,12 +1025,84 @@ fn spawn_cursor(
 }
 
 fn color_for_kind(kind: &node::NodeType) -> Color {
+    // Directory, file, and symlink keep the colors this port already uses.
+    // The rest are color.c default_nodetype_colors.
     match kind {
         node::NodeType::Directory => Color::srgb(0.3, 0.6, 1.0),
         node::NodeType::File => Color::srgb(0.9, 0.8, 0.3),
         node::NodeType::Symlink => Color::srgb(1.0, 0.5, 0.8),
-        node::NodeType::Other => Color::srgb(0.6, 0.6, 0.6),
+        node::NodeType::Fifo => Color::srgb(0.0, 1.0, 0.0),
+        node::NodeType::Socket => Color::srgb(1.0, 0.5, 0.0),
+        node::NodeType::Char => Color::srgb(0.0, 1.0, 1.0),
+        node::NodeType::Block => Color::srgb(0.3, 0.63, 1.0),
+        node::NodeType::Unknown => Color::srgb(1.0, 0.0, 0.0),
     }
+}
+
+/// color.c wpattern_color, the built-in groups. Directories stay a type color.
+/// `*.jpg` does not match `.jpg` or `*.JPG`.
+fn wild_color(name: &str, kind: &node::NodeType) -> Color {
+    if matches!(kind, node::NodeType::Directory) {
+        return color_for_kind(kind);
+    }
+    const GROUPS: &[(&str, &[&str])] = &[
+        ("#FF3333", &["*.arj", "*.gz", "*.lzh", "*.tar", "*.tgz", "*.z", "*.zip", "*.Z"]),
+        ("#FF33FF", &["*.gif", "*.jpg", "*.png", "*.ppm", "*.tga", "*.tif", "*.xpm"]),
+        ("#FFFFFF", &["*.au", "*.mov", "*.mp3", "*.mpg", "*.wav"]),
+    ];
+    for (hex, pats) in GROUPS {
+        if pats.iter().any(|pat| wild_match(pat, name)) {
+            return hex_color(hex);
+        }
+    }
+    Color::srgb(1.0, 1.0, 0.627)
+}
+
+fn hex_color(hex: &str) -> Color {
+    let n = u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap_or(0);
+    Color::srgb(
+        ((n >> 16) & 255) as f32 / 255.0,
+        ((n >> 8) & 255) as f32 / 255.0,
+        (n & 255) as f32 / 255.0,
+    )
+}
+
+fn wild_match(pat: &str, name: &str) -> bool {
+    fn go(p: &[u8], n: &[u8], leading: bool) -> bool {
+        if p.is_empty() {
+            return n.is_empty();
+        }
+        match p[0] {
+            b'*' => {
+                if leading && n.first() == Some(&b'.') {
+                    return false;
+                }
+                let rest = &p[1..];
+                if go(rest, n, false) {
+                    return true;
+                }
+                for i in 1..=n.len() {
+                    if go(rest, &n[i..], false) {
+                        return true;
+                    }
+                }
+                false
+            }
+            b'?' => {
+                if n.is_empty() || (leading && n[0] == b'.') {
+                    return false;
+                }
+                go(&p[1..], &n[1..], false)
+            }
+            c => {
+                if n.is_empty() || n[0] != c {
+                    return false;
+                }
+                go(&p[1..], &n[1..], false)
+            }
+        }
+    }
+    go(pat.as_bytes(), name.as_bytes(), true)
 }
 
 /// color.c rainbow_color(1 - x). Old files sit at the blue end, new ones at red.
@@ -1406,6 +1498,9 @@ struct FileRow {
     kind: &'static str,
     size: String,
     path: PathBuf,
+    is_dir: bool,
+    expanded: bool,
+    has_sub: bool,
 }
 
 fn find_node<'a>(node: &'a node::Node, path: &Path) -> Option<&'a node::Node> {
@@ -1443,7 +1538,11 @@ fn file_rows(dir: &node::Node) -> Vec<FileRow> {
                 node::NodeType::Directory => "dir",
                 node::NodeType::File => "file",
                 node::NodeType::Symlink => "link",
-                node::NodeType::Other => "other",
+                node::NodeType::Fifo => "fifo",
+                node::NodeType::Socket => "sock",
+                node::NodeType::Char => "char",
+                node::NodeType::Block => "block",
+                node::NodeType::Unknown => "?",
             };
             let bytes = if child.is_dir() { child.subtree_size } else { child.size };
             FileRow {
@@ -1451,6 +1550,9 @@ fn file_rows(dir: &node::Node) -> Vec<FileRow> {
                 kind,
                 size: human_size(bytes),
                 path: child.path.clone(),
+                is_dir: child.is_dir(),
+                expanded: child.expanded,
+                has_sub: child.children.iter().any(|c| c.is_dir()),
             }
         })
         .collect();
@@ -1550,6 +1652,7 @@ fn side_panel(
     let selected_now = state.selected.clone();
     let mut select: Option<PathBuf> = None;
     let mut toggle: Option<PathBuf> = None;
+    let mut menu: Option<MenuCmd> = None;
 
     egui::SidePanel::left("tree_panel")
         .resizable(true)
@@ -1568,9 +1671,40 @@ fn side_panel(
                     state.frame_pending = true;
                     changed = true;
                 }
-                if ui.button(if state.color_age { "Age" } else { "Type" }).clicked() {
-                    state.color_age = !state.color_age;
+                if ui.button(match state.paint {
+                    Paint::Type => "Type",
+                    Paint::Age => "Age",
+                    Paint::Wild => "Wild",
+                }).clicked() {
+                    state.paint = match state.paint {
+                        Paint::Type => Paint::Age,
+                        Paint::Age => Paint::Wild,
+                        Paint::Wild => Paint::Type,
+                    };
                     changed = true;
+                }
+                if ui.button("Back").clicked() && !state.history.is_empty() {
+                    if let Some(prev) = state.history.pop() {
+                        state.backtracking = true;
+                        queue_fly(&mut state, &pickables, prev.clone());
+                        state.selected = Some(prev);
+                        state.dirty = true;
+                    }
+                }
+                if ui.button("Root").clicked() {
+                    let path = state.root.path.clone();
+                    queue_fly(&mut state, &pickables, path.clone());
+                    state.selected = Some(path);
+                    state.dirty = true;
+                }
+                if ui.button("Up").clicked() {
+                    if let Some(path) = state.selected.clone().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
+                        if find_node(&state.root, &path).is_some() {
+                            queue_fly(&mut state, &pickables, path.clone());
+                            state.selected = Some(path);
+                            state.dirty = true;
+                        }
+                    }
                 }
                 if ui.toggle_value(&mut bird_on, "Bird's eye").changed() {
                     if let Ok(mut orbit) = orbits.get_single_mut() {
@@ -1594,7 +1728,15 @@ fn side_panel(
                 .id_salt("dir_tree")
                 .max_height(tree_h)
                 .show(ui, |ui| {
-                    show_dirs(ui, &mut state.root, selected_now.as_deref(), 0, &mut select, &mut toggle);
+                    show_dirs(
+                        ui,
+                        &mut state.root,
+                        selected_now.as_deref(),
+                        0,
+                        &mut select,
+                        &mut toggle,
+                        &mut menu,
+                    );
                 });
 
             ui.separator();
@@ -1606,14 +1748,43 @@ fn side_panel(
                     for row in &rows {
                         let text = format!("{:<4}  {:<8}  {}", row.kind, row.size, row.name);
                         let on = state.selected.as_ref() == Some(&row.path);
-                        if ui.selectable_label(on, text).clicked() {
+                        let resp = ui.selectable_label(on, text);
+                        if resp.clicked() {
                             select = Some(row.path.clone());
                         }
+                        resp.context_menu(|ui| {
+                            fill_menu(ui, &row.path, row.is_dir, row.expanded, row.has_sub, &mut menu);
+                        });
                     }
                 });
+            ui.separator();
+            ui.label("Change root");
+            ui.text_edit_singleline(&mut state.root_input);
+            if ui.button("Scan").clicked() {
+                match scan::scan(Path::new(&state.root_input)) {
+                    Ok(root) => {
+                        state.root_input = root.path.display().to_string();
+                        state.root = root;
+                        state.selected = None;
+                        state.hovered = None;
+                        state.history.clear();
+                        state.deploys.clear();
+                        state.props = None;
+                        state.root_error.clear();
+                        state.frame_pending = true;
+                        state.dirty = true;
+                    }
+                    Err(err) => state.root_error = err.to_string(),
+                }
+            }
+            if !state.root_error.is_empty() {
+                ui.label(egui::RichText::new(&state.root_error).small().color(egui::Color32::LIGHT_RED));
+            }
         });
 
-    if let Some(path) = toggle {
+    if let Some(cmd) = menu {
+        apply_menu(&mut state, &pickables, cmd);
+    } else if let Some(path) = toggle {
         let was_open = is_expanded_dir(&state.root, &path);
         if !was_open {
             queue_fly(&mut state, &pickables, path.clone());
@@ -1632,10 +1803,191 @@ fn side_panel(
     if changed {
         state.dirty = true;
     }
+    show_props(contexts.ctx_mut(), &mut state);
+}
+
+enum MenuCmd {
+    Expand(PathBuf),
+    ExpandAll(PathBuf),
+    Collapse(PathBuf),
+    Look(PathBuf),
+    Props(PathBuf),
+}
+
+/// dialog.c context_menu. Right click on a row, not on the view.
+fn fill_menu(
+    ui: &mut egui::Ui,
+    path: &Path,
+    is_dir: bool,
+    expanded: bool,
+    has_sub: bool,
+    menu: &mut Option<MenuCmd>,
+) {
+    if is_dir {
+        if expanded {
+            if ui.button("Collapse").clicked() {
+                *menu = Some(MenuCmd::Collapse(path.to_path_buf()));
+                ui.close_menu();
+            }
+        } else {
+            if ui.button("Expand").clicked() {
+                *menu = Some(MenuCmd::Expand(path.to_path_buf()));
+                ui.close_menu();
+            }
+            if has_sub && ui.button("Expand all").clicked() {
+                *menu = Some(MenuCmd::ExpandAll(path.to_path_buf()));
+                ui.close_menu();
+            }
+        }
+    }
+    if ui.button("Look at").clicked() {
+        *menu = Some(MenuCmd::Look(path.to_path_buf()));
+        ui.close_menu();
+    }
+    if ui.button("Properties").clicked() {
+        *menu = Some(MenuCmd::Props(path.to_path_buf()));
+        ui.close_menu();
+    }
+}
+
+fn apply_menu(state: &mut AppState, pickables: &Query<(&Pickable, &Transform)>, cmd: MenuCmd) {
+    match cmd {
+        MenuCmd::Expand(path) => {
+            queue_fly(state, pickables, path.clone());
+            start_deploy(state, &path, true);
+            state.selected = Some(path);
+        }
+        MenuCmd::ExpandAll(path) => {
+            queue_fly(state, pickables, path.clone());
+            expand_all(&mut state.root, &path, false);
+            state.selected = Some(path);
+            state.dirty = true;
+        }
+        MenuCmd::Collapse(path) => {
+            collapse_all(&mut state.root, &path, false);
+            start_deploy(state, &path, false);
+            state.selected = Some(path);
+        }
+        MenuCmd::Look(path) => {
+            queue_fly(state, pickables, path.clone());
+            state.selected = Some(path);
+            state.dirty = true;
+        }
+        MenuCmd::Props(path) => state.props = Some(path),
+    }
+}
+
+fn expand_all(node: &mut node::Node, path: &Path, inside: bool) {
+    let here = inside || node.path == path;
+    if here && node.is_dir() {
+        node.expanded = true;
+        node.deployment = 1.0;
+    }
+    if here {
+        for child in &mut node.children {
+            expand_all(child, path, true);
+        }
+    } else {
+        for child in &mut node.children {
+            expand_all(child, path, false);
+        }
+    }
+}
+
+fn collapse_all(node: &mut node::Node, path: &Path, inside: bool) {
+    let here = inside || node.path == path;
+    if here && inside && node.is_dir() {
+        node.expanded = false;
+        node.deployment = 0.0;
+    }
+    if here {
+        for child in &mut node.children {
+            collapse_all(child, path, true);
+        }
+    } else {
+        for child in &mut node.children {
+            collapse_all(child, path, false);
+        }
+    }
+}
+
+fn show_props(ctx: &egui::Context, state: &mut AppState) {
+    let Some(path) = state.props.clone() else { return };
+    let snap = find_node(&state.root, &path).map(|node| {
+        (
+            node.name.clone(),
+            node.kind.clone(),
+            node.size,
+            node.subtree_size,
+            node.children.len(),
+            node.is_dir(),
+        )
+    });
+    let Some((name, kind, size, subtree, kids, is_dir)) = snap else {
+        state.props = None;
+        return;
+    };
+    let meta = std::fs::symlink_metadata(&path).ok();
+    let link = if matches!(kind, node::NodeType::Symlink) {
+        std::fs::read_link(&path).ok()
+    } else {
+        None
+    };
+    let mut open = true;
+    egui::Window::new("Properties")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(true)
+        .show(ctx, |ui| {
+            ui.label(egui::RichText::new(&name).strong());
+            ui.label(kind_name(&kind));
+            ui.label(path.display().to_string());
+            if is_dir {
+                ui.label(format!("Total size  {}", human_size(subtree)));
+                ui.label(format!("Contains  {}", node_count(kids)));
+            } else {
+                ui.label(format!("Size  {}", human_size(size)));
+                if let Some(meta) = meta.as_ref() {
+                    use std::os::unix::fs::MetadataExt;
+                    ui.label(format!("Allocation  {}", human_size(meta.blocks() * 512)));
+                }
+            }
+            if let Some(meta) = meta.as_ref() {
+                use std::os::unix::fs::MetadataExt;
+                ui.label(format!("Owner  uid {}", meta.uid()));
+                ui.label(format!("Group  gid {}", meta.gid()));
+            }
+            if let Some(target) = &link {
+                ui.label(format!("Points to  {}", target.display()));
+            }
+        });
+    if !open {
+        state.props = None;
+    }
+}
+
+fn kind_name(kind: &node::NodeType) -> &'static str {
+    match kind {
+        node::NodeType::Directory => "Directory",
+        node::NodeType::File => "File",
+        node::NodeType::Symlink => "Symlink",
+        node::NodeType::Fifo => "Named pipe",
+        node::NodeType::Socket => "Socket",
+        node::NodeType::Char => "Character device",
+        node::NodeType::Block => "Block device",
+        node::NodeType::Unknown => "Unknown",
+    }
 }
 
 fn queue_fly(state: &mut AppState, pickables: &Query<(&Pickable, &Transform)>, path: PathBuf) {
     let from_path = state.selected.clone().unwrap_or_else(|| state.root.path.clone());
+    if from_path != path {
+        if state.backtracking {
+            state.backtracking = false;
+        } else if state.history.last() != Some(&from_path) {
+            state.history.push(from_path.clone());
+        }
+    }
     let (from_pos, from_span) = live_place(pickables, &from_path);
     state.fly_from = Some(from_path);
     state.fly_from_pos = from_pos;
@@ -1650,6 +2002,7 @@ fn show_dirs(
     depth: usize,
     select: &mut Option<PathBuf>,
     toggle: &mut Option<PathBuf>,
+    menu: &mut Option<MenuCmd>,
 ) {
     if !node.is_dir() {
         return;
@@ -1668,13 +2021,19 @@ fn show_dirs(
             *toggle = Some(node.path.clone());
         }
         let on = selected == Some(node.path.as_path());
-        if ui.selectable_label(on, &node.name).clicked() {
+        let resp = ui.selectable_label(on, &node.name);
+        if resp.clicked() {
             *select = Some(node.path.clone());
         }
+        let path = node.path.clone();
+        let expanded = node.expanded;
+        resp.context_menu(|ui| {
+            fill_menu(ui, &path, true, expanded, has_sub, menu);
+        });
     });
     if node.expanded {
         for child in &mut node.children {
-            show_dirs(ui, child, selected, depth + 1, select, toggle);
+            show_dirs(ui, child, selected, depth + 1, select, toggle, menu);
         }
     }
 }
@@ -1700,7 +2059,11 @@ fn print_tree(node: &node::Node, depth: usize) {
         node::NodeType::Directory => "dir",
         node::NodeType::File => "file",
         node::NodeType::Symlink => "link",
-        node::NodeType::Other => "other",
+        node::NodeType::Fifo => "fifo",
+        node::NodeType::Socket => "sock",
+        node::NodeType::Char => "char",
+        node::NodeType::Block => "block",
+        node::NodeType::Unknown => "?",
     };
     let exp = if node.expanded { "+" } else { "-" };
     println!(

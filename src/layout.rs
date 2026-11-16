@@ -173,7 +173,7 @@ fn side_slant(kind: &NodeType) -> f64 {
         NodeType::Directory => 0.032,
         NodeType::File => 0.064,
         NodeType::Symlink => 0.333,
-        NodeType::Other => 0.0,
+        NodeType::Fifo | NodeType::Socket | NodeType::Char | NodeType::Block | NodeType::Unknown => 0.0,
     }
 }
 

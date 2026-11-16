@@ -6,7 +6,11 @@ pub enum NodeType {
     Directory,
     File,
     Symlink,
-    Other,
+    Fifo,
+    Socket,
+    Char,
+    Block,
+    Unknown,
 }
 
 /// MapV rectangle in the original fsv units.
