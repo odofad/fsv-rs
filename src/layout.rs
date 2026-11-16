@@ -459,13 +459,8 @@ pub fn cursor_bar() -> f32 {
 
 pub fn treev_layout(root: &Node, span: (u64, u64)) -> LayoutResult {
     // geometry.c treev_init / treev_arrange / treev_build_dir.
-    // A directory is an arc. Files and collapsed folders stand on it in rows.
-    // Expanded folders become the next arc out, joined by a thin branch.
-    // Original spacing is tighter (leaf pitch 1.5*edge, branch as wide as a
-    // block, radial gap 2048). Those read as a packed road on a modern
-    // directory, so the pitch, the gap and the line are opened up a bit.
-    const SPACING_D: f64 = 3072.0;
-    const BRANCH: f64 = 48.0;
+    const SPACING_D: f64 = 2048.0;
+    const BRANCH: f64 = 256.0;
     const MIN_CORE: f64 = 8192.0;
     const GROW: f64 = 1.25;
     const MIN_ARC: f64 = 90.0;
@@ -591,28 +586,18 @@ fn raw_arc(
 }
 
 /// Arc width of this platform, its depth, and the arc taken by expanded children.
+/// A collapsed directory is a leaf on its parent, so it adds no arc.
 fn tv_measure(node: &Node, r0: f64) -> (f64, f64, f64) {
-    if !node.is_dir() {
+    if !node.is_dir() || !node.expanded {
         return (0.0, 0.0, 0.0);
     }
-    // A collapsed directory is still a pedestal: its own files sit on it,
-    // and one wire runs back to the parent. Only an expanded directory
-    // grows another ring of pedestals.
-    let reveal = node.expanded;
-    let n_leaves = node
-        .children
-        .iter()
-        .filter(|child| !(child.is_dir() && (child.expanded || reveal)))
-        .count();
-    let (depth, arc) = tv_fit(n_leaves.max(1), r0);
+    let (depth, arc) = tv_fit(node.children.len().max(1), r0);
     let child_r = r0 + depth + SPACING_D;
     let mut sub = 0.0;
-    if reveal {
-        for child in &node.children {
-            if child.is_dir() {
-                let (ca, _, cs) = tv_measure(child, child_r);
-                sub += ca.max(cs);
-            }
+    for child in &node.children {
+        if child.is_dir() && child.expanded {
+            let (ca, _, cs) = tv_measure(child, child_r);
+            sub += ca.max(cs);
         }
     }
     (arc, depth, sub)
@@ -638,7 +623,7 @@ fn tv_reshape(n_children: usize, r0: f64) -> (f64, f64) {
     let frac = (depth - EDGE05).rem_euclid(PITCH);
     depth += (PITCH - frac) + EDGE05;
     let theta = 180.0 * (d + SPACING_W) / (PI * (r0 + d));
-    let min_arc = (180.0 * (2.0 * PITCH) / PI) / r0.max(1.0);
+    let min_arc = (180.0 * (2.0 * LEAF + SPACING_W) / PI) / r0.max(1.0);
     (depth, theta.max(min_arc))
 }
 
@@ -707,25 +692,17 @@ fn tv_emit(
     max_r: &mut f64,
     span: (u64, u64),
 ) {
-    const BRANCH: f64 = 48.0;
+    const BRANCH: f64 = 256.0;
     const PLATFORM_H: f64 = 158.2;
     const PI: f64 = std::f64::consts::PI;
 
-    let n_leaves = node
-        .children
-        .iter()
-        .filter(|child| !(child.is_dir() && (child.expanded || node.expanded)))
-        .count();
-    let (depth, arc) = tv_fit(n_leaves.max(1), r0);
+    let (depth, arc) = tv_fit(node.children.len().max(1), r0);
     let half = 0.5 * arc;
-    // Nominal arc already leaves SPACING_W out of the leaf rows. Flare the
-    // slab a little past that so the end cubes are not sitting on the rim.
-    let flare = (180.0 * (0.5 * LEAF) / PI) / r0.max(1.0);
     arcs.push(raw_arc(
         r0,
         r0 + depth,
-        abs_deg - half - flare,
-        abs_deg + half + flare,
+        abs_deg - half,
+        abs_deg + half,
         z0,
         PLATFORM_H,
         node,
@@ -734,14 +711,28 @@ fn tv_emit(
     ));
     *max_r = max_r.max(r0 + depth);
 
-    let leaves: Vec<&Node> = node
-        .children
-        .iter()
-        .filter(|child| !(child.is_dir() && (child.expanded || node.expanded)))
-        .collect();
-    let mut remaining = leaves.len();
+    // Incoming stem. Width is 256 in cartesian units, halfway back across the gap.
+    let stem_r = r0 - 0.5 * SPACING_D;
+    let stem_half = tv_half_deg(BRANCH, (stem_r + r0) * 0.5);
+    arcs.push(raw_arc(
+        stem_r,
+        r0,
+        abs_deg - stem_half,
+        abs_deg + stem_half,
+        z0,
+        48.0,
+        node,
+        true,
+        false,
+    ));
+
+    // Every child takes a slot, including an open directory. An open
+    // directory is not a block: it is the next platform. A closed
+    // directory is a block. Files are blocks.
+    let kids: Vec<&Node> = node.children.iter().collect();
+    let mut remaining = kids.len();
     let mut pos_r = r0 + LEAF;
-    let mut idx = leaves.len();
+    let mut idx = kids.len();
     while idx > 0 {
         let arc_len = (PI / 180.0) * pos_r * arc - SPACING_W;
         let mut row_n = ((arc_len - EDGE05) / PITCH).floor() as isize;
@@ -754,17 +745,21 @@ fn tv_emit(
         let mut theta = 0.5 * inter * (take as f64 - 1.0);
         for _ in 0..take {
             idx -= 1;
-            tv_leaf(
-                leaves[idx],
-                r0,
-                pos_r - r0,
-                abs_deg + theta,
-                z0 + PLATFORM_H,
-                true,
-                boxes,
-                max_r,
-                span,
-            );
+            let child = kids[idx];
+            let open_dir = child.is_dir() && child.expanded;
+            if !open_dir {
+                tv_leaf(
+                    child,
+                    r0,
+                    pos_r - r0,
+                    abs_deg + theta,
+                    z0 + PLATFORM_H,
+                    true,
+                    boxes,
+                    max_r,
+                    span,
+                );
+            }
             theta -= inter;
         }
         remaining = remaining.saturating_sub(row_n);
@@ -781,14 +776,14 @@ fn tv_emit(
         * node
             .children
             .iter()
-            .filter(|c| c.is_dir() && (c.expanded || node.expanded))
+            .filter(|c| c.is_dir() && c.expanded)
             .map(|c| {
                 let (ca, _, cs) = tv_measure(c, child_r);
                 ca.max(cs)
             })
             .sum::<f64>();
     for child in &node.children {
-        if !(child.is_dir() && (child.expanded || node.expanded)) {
+        if !(child.is_dir() && child.expanded) {
             continue;
         }
         let (ca, _, cs) = tv_measure(child, child_r);
@@ -823,28 +818,32 @@ fn tv_emit(
             true,
             false,
         ));
-        // The arc ribbon is only as wide as the line, not a whole block.
         let pad = tv_half_deg(BRANCH, mid_r);
-        arcs.push(raw_arc(
-            mid_r - 0.5 * BRANCH,
-            mid_r + 0.5 * BRANCH,
-            abs_deg + a.min(b).min(0.0) - pad,
-            abs_deg + a.max(b).max(0.0) + pad,
-            z0,
-            48.0,
-            node,
-            true,
-            false,
-        ));
+        let span_deg = (b - a).abs();
+        // treev_gldraw_outbranch skips a zero-length arc. One open child
+        // sits on the center line, so only the stem is drawn.
+        if span_deg > 1e-3 {
+            arcs.push(raw_arc(
+                mid_r - 0.5 * BRANCH,
+                mid_r + 0.5 * BRANCH,
+                abs_deg + a.min(b) - pad,
+                abs_deg + a.max(b) + pad,
+                z0,
+                48.0,
+                node,
+                true,
+                false,
+            ));
+        }
     }
 }
 
 const LEAF: f64 = 256.0;
 const EDGE05: f64 = 0.5 * LEAF;
-/// Center-to-center. Original treev_build_dir uses 1.5 * leaf (a half-block gap).
-const PITCH: f64 = 2.0 * LEAF;
+/// Center-to-center. treev_build_dir steps 1.5 leaf edges.
+const PITCH: f64 = 1.5 * LEAF;
 const SPACING_W: f64 = 512.0;
-const SPACING_D: f64 = 3072.0;
+const SPACING_D: f64 = 2048.0;
 
 fn tv_leaf_height(node: &Node) -> f64 {
     // geometry.c uses sqrt(bytes). On a 1999 disk that stayed near the

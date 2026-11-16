@@ -297,17 +297,42 @@ fn current_layout_against_golden() {
     }
 
     let drawn = layout::layout(&mut tree, LayoutMode::TreeV);
-    let branches = drawn.arcs.iter().filter(|a| a.branch).count();
-    report.push_str(&format!(
-        "treev boxes {} arcs {} of which branches {}\n",
-        drawn.boxes.len(),
-        drawn.arcs.len(),
-        branches
-    ));
-    // Original branch width is 256, same as a leaf edge. The current
-    // layout draws a thinner branch and then scales everything.
-    report.push_str("golden branch width 256, platform height 158.2, leaf edge 256\n");
-    report.push_str("golden wire: stem to docs, no arc span (only one open child), none to src\n");
+    let names: Vec<&str> = drawn.boxes.iter().map(|b| b.name.as_str()).collect();
+    report.push_str(&format!("treev boxes {names:?}\n"));
+    let platforms: Vec<&str> = drawn
+        .arcs
+        .iter()
+        .filter(|a| !a.branch)
+        .map(|a| a.name.as_str())
+        .collect();
+    let branches: Vec<&str> = drawn
+        .arcs
+        .iter()
+        .filter(|a| a.branch)
+        .map(|a| a.name.as_str())
+        .collect();
+    report.push_str(&format!("platforms {platforms:?}\nbranches {branches:?}\n"));
+    // Closed src is a block. Its files stay hidden. Open docs is a platform.
+    for need in ["photo", "src", "notes", "readme"] {
+        if !names.contains(&need) {
+            mismatches += 1;
+            report.push_str(&format!("missing leaf {need}\n"));
+        }
+    }
+    for hidden in ["main", "util"] {
+        if names.contains(&hidden) {
+            mismatches += 1;
+            report.push_str(&format!("closed directory leaked {hidden}\n"));
+        }
+    }
+    if !platforms.contains(&"docs") || platforms.contains(&"src") {
+        mismatches += 1;
+        report.push_str("platform set is wrong\n");
+    }
+    if !branches.contains(&"docs") {
+        mismatches += 1;
+        report.push_str("docs has no incoming wire\n");
+    }
 
     assert!(
         mismatches == 0,
