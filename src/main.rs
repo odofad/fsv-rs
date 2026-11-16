@@ -43,6 +43,14 @@ struct AppState {
     frame_pending: bool,
     /// Clicked node. The fly starts after the rebuild, at the new spot.
     fly_to: Option<PathBuf>,
+    /// Folder the camera was on before that click, so the flight starts there.
+    fly_from: Option<PathBuf>,
+    fly_from_pos: Vec3,
+    fly_from_span: f32,
+    fly_from_place: Option<(Vec3, Vec3)>,
+    fly_to_place: Option<(Vec3, Vec3)>,
+    fly_from_area: f32,
+    fly_to_area: f32,
     /// Rebuild the meshes. Not Bevy's change flag: writing geometry
     /// onto the tree must not schedule another rebuild by itself.
     dirty: bool,
@@ -120,10 +128,26 @@ fn main() {
                     focus: Vec3::ZERO,
                     frame_pending: true,
                     fly_to: None,
+                    fly_from: None,
+                    fly_from_pos: Vec3::ZERO,
+                    fly_from_span: 1.0,
+                    fly_from_place: None,
+                    fly_to_place: None,
+                    fly_from_area: 0.0,
+                    fly_to_area: 0.0,
                     dirty: true,
                 })
                 .add_systems(Startup, setup)
-                .add_systems(Update, (orbit_camera, hover_pick, click_expand, face_labels, side_panel, rebuild_layout, apply_frame, fly_to_opened.after(rebuild_layout)))
+                .add_systems(Update, (
+                    orbit_camera,
+                    hover_pick,
+                    click_expand.before(rebuild_layout),
+                    face_labels,
+                    side_panel,
+                    rebuild_layout,
+                    apply_frame,
+                    fly_to_opened.after(rebuild_layout),
+                ))
                 .run();
         }
         Err(e) => {
@@ -305,22 +329,13 @@ fn begin_fly(orbit: &mut OrbitCamera, translation: Vec3, scale: Vec3, is_dir: bo
     let half = (fov * 0.5).max(0.2);
     let end_dist = (k * diameter * (0.5 / half.tan())).clamp(1.8, 80.0);
 
-    // Same heading rule as fsv mapv_camera_theta: a bit more side-on
-    // toward the edges of the map, about 50 degrees up.
-    let x_norm = (focus.x / 20.0).clamp(-0.45, 0.45);
-    let theta = (270.0 + 45.0 * x_norm).to_radians();
-    let phi = if is_dir { 50.0_f32 } else { 40.0 };
-    let end_pitch = -phi.to_radians();
-    let end_yaw = theta.cos().atan2(theta.sin());
-
+    // Keep the heading you already have. The flight is the focus moving
+    // from the folder you were on to the one that just opened.
+    let end_yaw = orbit.yaw;
+    let end_pitch = orbit.pitch;
     let travel = orbit.focus.distance(focus);
-    let duration = (1.8 + travel * 0.18).clamp(2.2, 4.5);
-    let swing = is_dir || travel > 3.0 * orbit.distance.max(end_dist);
-    let mid_dist = if swing {
-        1.15 * end_dist.max(travel * 0.65)
-    } else {
-        (orbit.distance + end_dist) * 0.5
-    };
+    let duration = (2.4 + travel * 0.22).clamp(2.4, 5.5);
+    let mid_dist = (orbit.distance + end_dist) * 0.5;
 
     // A click is a look-at. The original leaves bird's-eye for that,
     // and it does not restore the old pose first.
@@ -336,7 +351,7 @@ fn begin_fly(orbit: &mut OrbitCamera, translation: Vec3, scale: Vec3, is_dir: bo
         end_pitch,
         end_dist,
         mid_dist,
-        swing,
+        swing: false,
         t: 0.0,
         duration,
     });
@@ -369,6 +384,10 @@ fn spawn_geometry(
     materials: &mut ResMut<Assets<StandardMaterial>>,
     images: &mut ResMut<Assets<Image>>,
 ) {
+    state.fly_from_place = None;
+    state.fly_to_place = None;
+    state.fly_from_area = 0.0;
+    state.fly_to_area = 0.0;
     let result = layout::layout(&mut state.root, state.mode);
     let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
     let line_mat = materials.add(StandardMaterial {
@@ -406,6 +425,9 @@ fn spawn_geometry(
         let mesh = meshes.add(slanted_box(geom.slant_x, geom.slant_y));
         let translation = Vec3::new(geom.x, geom.z, geom.y);
         let scale = Vec3::new(geom.width.max(0.01), geom.height.max(0.01), geom.depth.max(0.01));
+        if !geom.x_mark {
+            note_place(state, &geom.path, translation, scale);
+        }
 
         commands.spawn((
             Mesh3d(mesh),
@@ -476,6 +498,10 @@ fn spawn_geometry(
             None => arc.path == root_path,
         };
         spawn_arc(commands, meshes, materials, images, &arc);
+        if !arc.branch {
+            let (translation, scale) = arc_focus(&arc);
+            note_place(state, &arc.path, translation, scale);
+        }
         if current && !arc.branch {
             spawn_arc_cursor(commands, cube.clone(), cursor_mat.clone(), &arc);
         }
@@ -984,6 +1010,14 @@ fn click_expand(
     }
 
     let Some((_, path, _, _)) = best else { return; };
+    let from_path = state
+        .selected
+        .clone()
+        .unwrap_or_else(|| state.root.path.clone());
+    let (from_pos, from_span) = live_place(&pickables, &from_path);
+    state.fly_from = Some(from_path);
+    state.fly_from_pos = from_pos;
+    state.fly_from_span = from_span;
     let open_dir = is_expanded_dir(&state.root, &path);
     state.selected = Some(path.clone());
     state.fly_to = Some(path.clone());
@@ -1064,25 +1098,29 @@ fn rebuild_layout(
 fn fly_to_opened(
     mut state: ResMut<AppState>,
     mut orbits: Query<&mut OrbitCamera>,
-    pickables: Query<(&Pickable, &Transform)>,
     projections: Query<&Projection>,
 ) {
     if state.dirty {
         return;
     }
     let Some(path) = state.fly_to.clone() else { return; };
-    let mut best: Option<(f32, Vec3, Vec3)> = None;
-    for (pick, transform) in &pickables {
-        if pick.path != path {
-            continue;
-        }
-        let area = transform.scale.x * transform.scale.z;
-        if best.as_ref().map_or(true, |(a, _, _)| area > *a) {
-            best = Some((area, transform.translation, transform.scale));
+    let Some((translation, scale)) = state.fly_to_place else { return; };
+    if let Some((from_pos, from_scale)) = state.fly_from_place {
+        if let Ok(mut orbit) = orbits.get_single_mut() {
+            let new_span = from_scale.x.max(from_scale.z).max(0.05);
+            let old_len = state.fly_from_pos.length();
+            let new_len = from_pos.length();
+            let ratio = if old_len > 0.5 && new_len > 0.5 {
+                new_len / old_len
+            } else {
+                new_span / state.fly_from_span.max(0.05)
+            };
+            orbit.focus = from_pos;
+            orbit.distance = (orbit.distance * ratio).clamp(1.5, 400.0);
         }
     }
-    let Some((_, translation, scale)) = best else { return; };
     state.fly_to = None;
+    state.fly_from = None;
     let is_dir = is_dir_path(&state.root, &path);
     let fov = match projections.get_single() {
         Ok(Projection::Perspective(p)) => p.fov,
@@ -1091,6 +1129,46 @@ fn fly_to_opened(
     if let Ok(mut orbit) = orbits.get_single_mut() {
         begin_fly(&mut orbit, translation, scale, is_dir, fov);
     }
+}
+
+fn live_place(pickables: &Query<(&Pickable, &Transform)>, path: &Path) -> (Vec3, f32) {
+    let mut best: Option<(f32, Vec3, f32)> = None;
+    for (pick, transform) in pickables {
+        if pick.path != path {
+            continue;
+        }
+        let span = transform.scale.x.max(transform.scale.z);
+        let area = transform.scale.x * transform.scale.z;
+        if best.as_ref().map_or(true, |(a, _, _)| area > *a) {
+            best = Some((area, transform.translation, span));
+        }
+    }
+    best.map(|(_, pos, span)| (pos, span.max(0.05))).unwrap_or((Vec3::ZERO, 1.0))
+}
+
+fn note_place(state: &mut AppState, path: &Path, translation: Vec3, scale: Vec3) {
+    let area = scale.x * scale.z;
+    if state.fly_from.as_deref() == Some(path.as_ref()) && area >= state.fly_from_area {
+        state.fly_from_area = area;
+        state.fly_from_place = Some((translation, scale));
+    }
+    if state.fly_to.as_deref() == Some(path.as_ref()) && area >= state.fly_to_area {
+        state.fly_to_area = area;
+        state.fly_to_place = Some((translation, scale));
+    }
+}
+
+fn arc_focus(arc: &layout::ArcGeom) -> (Vec3, Vec3) {
+    let mid = (arc.theta0 + arc.theta1) * 0.5;
+    let span = (arc.theta1 - arc.theta0).abs().max(0.02);
+    let r = (arc.r0 + arc.r1) * 0.5;
+    let translation = Vec3::new(r * mid.cos(), arc.y + arc.height * 0.5, r * mid.sin());
+    let scale = Vec3::new(
+        (r * span).max(0.05),
+        arc.height.max(0.05),
+        (arc.r1 - arc.r0).abs().max(0.05),
+    );
+    (translation, scale)
 }
 
 fn toggle_birdseye(orbit: &mut OrbitCamera, root_width: f32, fov: f32) {
