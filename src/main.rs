@@ -1297,7 +1297,7 @@ fn list_dir<'a>(root: &'a node::Node, selected: Option<&Path>) -> &'a node::Node
 }
 
 fn file_rows(dir: &node::Node) -> Vec<FileRow> {
-    let mut rows: Vec<FileRow> = dir
+    let rows: Vec<FileRow> = dir
         .children
         .iter()
         .map(|child| {
@@ -1443,12 +1443,12 @@ fn side_panel(
                 }
             });
 
-            let split = (ui.available_height() * 0.5).max(80.0);
+            let avail = ui.available_height();
+            let tree_h = (avail * 0.55).clamp(100.0, avail - 96.0);
             ui.label(egui::RichText::new("Directory tree").small());
             egui::ScrollArea::vertical()
                 .id_salt("dir_tree")
-                .max_height(split)
-                .auto_shrink([false, false])
+                .max_height(tree_h)
                 .show(ui, |ui| {
                     show_dirs(ui, &mut state.root, selected_now.as_deref(), 0, &mut select, &mut toggle);
                 });
@@ -1457,7 +1457,7 @@ fn side_panel(
             ui.label(egui::RichText::new(format!("{list_name}  {count}")).small());
             egui::ScrollArea::vertical()
                 .id_salt("file_list")
-                .auto_shrink([false, false])
+                .max_height((avail - tree_h).max(80.0))
                 .show(ui, |ui| {
                     for row in &rows {
                         let text = format!("{:<4}  {:<8}  {}", row.kind, row.size, row.name);
