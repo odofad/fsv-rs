@@ -2,6 +2,9 @@ mod node;
 mod scan;
 mod layout;
 
+#[cfg(test)]
+mod golden;
+
 use std::f32::consts::PI;
 use std::path::{PathBuf, Path};
 use clap::Parser;
