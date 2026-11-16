@@ -106,10 +106,14 @@ Wildcards are a third mode. A directory still uses the type color. An unmatched 
 
 ## What the Rust already has, against this map
 
-These are notes for step 3. They are not fixes.
+Checked against `geometry.c` and `camera.c`. These are the results of step 3.
 
-- MapV in Rust is a squarified treemap. The C packer is the row walk above, and its optimizer was never written. Area is `sqrt(size)`, not the size itself, and every node is at least 256 bytes.
-- Heights 384 and 128 match the constants. The slant ratios and the border formula do not, yet.
-- TreeV leaf height in the C is raw `sqrt`, no cap. The 2.4-edge cap stays an exception, and the fixture must record both numbers.
-- TreeV depth must come from the row walk in `treev_build_dir`, then the arc from the cubic. Estimating depth and also inventing a second spacing is how the picture drifted.
-- Wires are one arc over the open children, width 256 in cartesian units, and only when those children are open.
+- MapV is the C row walk. Area is `(sqrt(max(256, size)) + border)^2`, scaled to the face. Heights 384 and 128 match. Slant ratios match. The extra street gap is gone.
+- The scanned root is height 384. Height 0 belongs to the hidden parent metanode, which we do not build.
+- TreeV leaf height keeps the written cap at 2.4 edges. The fixture still records the raw `sqrt`.
+- A wire is one stem plus one arc across the open children, and that arc includes the parent center line. The root gets the inward stem. It does not get the metanode circle.
+- Platform height is 320, not 158.2. Kept on purpose so the floor reads from below.
+- The C draws a branch as a flat quad on z = 0. The port gives that ribbon 48 units of height so it is visible.
+- Camera field of view is 60 degrees. Near and far still follow the engine, not half the distance and 128 times that.
+- Color starts by type. Age is the switch. The rainbow still runs from the oldest file to the newest, not a one-week window.
+- Names are straight stickers. Curved platform names and the open/close ease are not in yet.

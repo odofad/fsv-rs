@@ -25,9 +25,9 @@ impl Default for View {
     fn default() -> Self {
         Self {
             target_width: 20.0,
-            min_dir_height: 1.15,
-            // A street, not a vacant lot. A block keeps about four fifths of its cell.
-            gap: 0.22,
+            min_dir_height: 0.0,
+            // The packer already leaves the C border. No second gap.
+            gap: 0.0,
         }
     }
 }
@@ -497,7 +497,7 @@ pub fn treev_layout(root: &Node, span: (u64, u64)) -> LayoutResult {
             core + SPACING_D,
             90.0,
             0.0,
-            false,
+            true,
             &mut boxes,
             &mut arcs,
             &mut max_r,
@@ -722,8 +722,8 @@ fn tv_emit(
     ));
     *max_r = max_r.max(r0 + depth);
 
-    // Incoming stem. The root has no parent, so it does not grow a line
-    // back to the empty core ring.
+    // Incoming stem. treev_gldraw_inbranch, including the root.
+    // The full circle is the metanode loop, which this tree does not have.
     if incoming {
         let stem_r = r0 - 0.5 * SPACING_D;
         let stem_half = tv_half_deg(BRANCH, (stem_r + r0) * 0.5);
@@ -833,16 +833,17 @@ fn tv_emit(
             true,
             false,
         ));
-        let pad = tv_half_deg(BRANCH, mid_r);
-        let span_deg = (b - a).abs();
-        // treev_gldraw_outbranch skips a zero-length arc. One open child
-        // sits on the center line, so only the stem is drawn.
-        if span_deg > 1e-3 {
+        let pad = tv_half_deg(BRANCH, mid_r - 0.5 * BRANCH);
+        // theta0 = min(0, first), theta1 = max(0, last). The arc always
+        // includes the parent center line.
+        let theta0 = a.min(b).min(0.0);
+        let theta1 = a.max(b).max(0.0);
+        if theta1 - theta0 > 1e-3 {
             arcs.push(raw_arc(
                 mid_r - 0.5 * BRANCH,
                 mid_r + 0.5 * BRANCH,
-                abs_deg + a.min(b) - pad,
-                abs_deg + a.max(b) + pad,
+                abs_deg + theta0 - pad,
+                abs_deg + theta1 + pad,
                 z0,
                 48.0,
                 node,

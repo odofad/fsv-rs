@@ -65,7 +65,8 @@ Camera framing, color modes, names on the faces, open/close motion. DiscV last. 
 These stay written down so they are not "fixed" by accident.
 
 - **Tall files.** `leaf.height = sqrt(size)` is the formula. On a modern disk that makes a gigabyte file about a hundred times the platform, and the tree disappears. The port keeps the order of `sqrt` and stops at 2.4 leaf-edges. The fixture records both the raw value and the capped value.
-- **Wires.** The C draws a wire only to a directory that has been opened. Showing a wire to every closed folder is a temporary cheat and comes out when TreeV is re-checked.
+- **Platform floor.** The C platform is 158.2 tall. The port uses 320 so the slab still reads when the camera goes under it.
+- **Branch height.** The C branch is a flat quad on z = 0, 256 wide. The port gives it 48 of height so the wire is not a sheet.
 - **Age colors.** Default in `color.c` is by type. Age is a switch. Directories keep the type color. The one-week window paints an old archive one color, so the rainbow runs from the oldest file in the tree to the newest. That difference is recorded, not hidden.
 - **DiscV.** `discv_gldraw_folder` is still empty upstream. We do not invent the missing half.
 

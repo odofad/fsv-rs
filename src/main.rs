@@ -123,7 +123,7 @@ fn main() {
                     mode,
                     selected: None,
                     hovered: None,
-                    color_age: true,
+                    color_age: false,
                     frame: 36.0,
                     focus: Vec3::ZERO,
                     frame_pending: true,
@@ -192,6 +192,10 @@ fn setup(
     let pitch = if tree { -1.15 } else { -0.85 };
     commands.spawn((
         Camera3d::default(),
+        Projection::Perspective(PerspectiveProjection {
+            fov: 60.0_f32.to_radians(),
+            ..default()
+        }),
         Transform::from_xyz(focus.x, focus.y + dist * 0.9, focus.z + dist * 0.4)
             .looking_at(focus, Vec3::Y),
         OrbitCamera {
