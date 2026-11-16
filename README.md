@@ -69,6 +69,8 @@ These stay written down so they are not "fixed" by accident.
 - **Branch height.** The C branch is a flat quad on z = 0, 256 wide. The port gives it 48 of height so the wire is not a sheet.
 - **Age colors.** Default in `color.c` is by type. Age is a switch. Directories keep the type color. The one-week window paints an old archive one color, so the rainbow runs from the oldest file in the tree to the newest. That difference is recorded, not hidden.
 - **DiscV.** `discv_gldraw_folder` is still empty upstream. We do not invent the missing half.
+- **Mouse.** Locked. The middle button orbits. The right button slides the view. The wheel zooms, and it does nothing while the pointer is on a panel. The manual dollies with the middle button and opens a menu with the right button. Do not put those back.
+- **A click on a closed folder opens it.** A click on an open folder only flies there. It does not collapse. The manual's left click only selects. Leave this as it is.
 
 ## Out of scope until the numbers match
 
