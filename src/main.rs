@@ -769,20 +769,49 @@ fn spawn_arc(
         });
     }
     if arc.label && !arc.name.is_empty() {
-        // treev_apply_label, platform case: white, just inside the inner
-        // edge, lying on the wire in front of the platform.
-        let mid = (arc.theta0 + arc.theta1) * 0.5;
-        let shown: String = arc.name.chars().take(24).collect();
-        let span = (arc.theta1 - arc.theta0).abs().max(0.05);
-        let max_d = 0.28;
-        let (text_w, text_d) = fit_label(arc.r0 * span * 0.8, max_d, shown.chars().count());
-        // The wire is 48 units tall. The platform is 320, twice the
-        // original, so the underside still reads from below.
-        let wire_top = arc.y + arc.height * (48.0 / 320.0);
-        let r = (arc.r0 - text_d * 0.55).max(0.2);
-        let pos = Vec3::new(r * mid.cos(), wire_top + 0.03, r * mid.sin());
+        // treev_apply_label, platform case: curved along the inner edge.
+        spawn_curved_label(commands, meshes, materials, images, arc);
+    }
+}
+
+/// Platform name, one glyph per step along the inner edge.
+/// text_draw_curved in the original. The letters lie flat and follow the arc.
+fn spawn_curved_label(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    images: &mut ResMut<Assets<Image>>,
+    arc: &layout::ArcGeom,
+) {
+    let chars: Vec<char> = arc.name.chars().take(24).collect();
+    let n = chars.len();
+    if n == 0 {
+        return;
+    }
+    let span = (arc.theta1 - arc.theta0).abs().max(0.05);
+    let usable = span * 0.85;
+    let wire_top = arc.y + arc.height * (48.0 / 320.0);
+    let glyph = 0.16_f32.min(arc.r0 * usable / n as f32).max(0.04);
+    let r = (arc.r0 - glyph * 0.65).max(0.25);
+    let step = (glyph / r).min(usable / n as f32);
+    let mid = (arc.theta0 + arc.theta1) * 0.5;
+    let start = mid - step * (n as f32 - 1.0) * 0.5;
+    for (i, ch) in chars.into_iter().enumerate() {
+        if ch == ' ' {
+            continue;
+        }
+        let t = start + step * i as f32;
+        let pos = Vec3::new(r * t.cos(), wire_top + 0.03, r * t.sin());
         spawn_flat_label(
-            commands, meshes, materials, images, &shown, pos, label_yaw(mid), text_w, text_d,
+            commands,
+            meshes,
+            materials,
+            images,
+            &ch.to_string(),
+            pos,
+            label_yaw(t),
+            glyph,
+            glyph,
             [255, 255, 255, 255],
         );
     }

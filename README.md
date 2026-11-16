@@ -73,3 +73,11 @@ These stay written down so they are not "fixed" by accident.
 ## Out of scope until the numbers match
 
 More spacing, thicker wires, new camera moves, and packaging.
+
+## Extended features
+
+Not part of the port. Do not build these while a picture function is still wrong.
+
+- **Thumbnails on the file blocks.** The name stays on top. The picture is a square patch on the side, not a texture stretched down the tower, so height still means size. A file shorter than one leaf-edge is raised to a cube so the picture is not crushed. Taller files keep their height and the same square.
+- **Read Ubuntu's cache, do not invent one.** `~/.cache/thumbnails/large` then `normal`. The file name is the MD5 of the `file://` URI. Use the PNG only if its stored modification time matches the file. A miss, or an entry under `thumbnails/fail`, leaves the block its color. Only the platform the camera has flown to.
+- **Video is separate.** Files skips anything over 50 MB, so a rush is not in that cache. A frame grab for video comes after the stills, and it is saved the same way.
