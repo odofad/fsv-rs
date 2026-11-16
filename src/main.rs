@@ -1263,30 +1263,11 @@ fn hover_pick(
     state.hovered = best.map(|(_, path)| path);
 }
 
-struct Readout {
+struct FileRow {
     name: String,
-    kind: String,
+    kind: &'static str,
     size: String,
-    tree: Option<String>,
-    path: String,
-}
-
-fn describe(root: &node::Node, path: Option<&Path>) -> Option<Readout> {
-    let path = path?;
-    let node = find_node(root, path)?;
-    let kind = match node.kind {
-        node::NodeType::Directory => "Directory",
-        node::NodeType::File => "File",
-        node::NodeType::Symlink => "Symlink",
-        node::NodeType::Other => "Other",
-    };
-    Some(Readout {
-        name: node.name.clone(),
-        kind: kind.to_string(),
-        size: human_size(node.size),
-        tree: node.is_dir().then(|| human_size(node.subtree_size)),
-        path: node.path.display().to_string(),
-    })
+    path: PathBuf,
 }
 
 fn find_node<'a>(node: &'a node::Node, path: &Path) -> Option<&'a node::Node> {
@@ -1315,14 +1296,6 @@ fn list_dir<'a>(root: &'a node::Node, selected: Option<&Path>) -> &'a node::Node
         .unwrap_or(root)
 }
 
-struct FileRow {
-    name: String,
-    kind: &'static str,
-    size: String,
-    path: PathBuf,
-    is_dir: bool,
-}
-
 fn file_rows(dir: &node::Node) -> Vec<FileRow> {
     let mut rows: Vec<FileRow> = dir
         .children
@@ -1340,11 +1313,9 @@ fn file_rows(dir: &node::Node) -> Vec<FileRow> {
                 kind,
                 size: human_size(bytes),
                 path: child.path.clone(),
-                is_dir: child.is_dir(),
             }
         })
         .collect();
-    rows.sort_by(|a, b| a.name.cmp(&b.name));
     rows
 }
 
@@ -1423,135 +1394,146 @@ fn side_panel(
     mut state: ResMut<AppState>,
     mut orbits: Query<&mut OrbitCamera>,
     projections: Query<&Projection>,
+    pickables: Query<(&Pickable, &Transform)>,
 ) {
     let mut changed = false;
     let bird_now = orbits.get_single().map(|o| o.birdseye).unwrap_or(false);
     let mut bird_on = bird_now;
-    let focus = state.hovered.clone().or_else(|| state.selected.clone());
-    let readout = describe(&state.root, focus.as_deref());
     let listed = list_dir(&state.root, state.selected.as_deref());
     let list_name = listed.name.clone();
     let rows = file_rows(listed);
     let count = node_count(rows.len());
-    egui::SidePanel::left("tree_panel").show(contexts.ctx_mut(), |ui| {
-        ui.heading("fsv-rs");
-        ui.separator();
+    let selected_now = state.selected.clone();
+    let mut select: Option<PathBuf> = None;
+    let mut toggle: Option<PathBuf> = None;
 
-        let mode_label = match state.mode {
-            layout::LayoutMode::MapV => "MapV",
-            layout::LayoutMode::TreeV => "TreeV",
-        };
-        ui.label(format!("Mode: {}", mode_label));
-        ui.label(match state.mode {
-            layout::LayoutMode::MapV => "Area shows size. No wires in this mode.",
-            layout::LayoutMode::TreeV => "Each folder is a platform. Wires join them.",
-        });
-
-        if ui.button(if state.color_age { "Color: age" } else { "Color: type" }).clicked() {
-            state.color_age = !state.color_age;
-            changed = true;
-        }
-
-        if ui.button("Toggle MapV / TreeV").clicked() {
-            state.mode = match state.mode {
-                layout::LayoutMode::MapV => layout::LayoutMode::TreeV,
-                layout::LayoutMode::TreeV => layout::LayoutMode::MapV,
-            };
-            state.frame_pending = true;
-            changed = true;
-        }
-
-        if ui.toggle_value(&mut bird_on, "Bird's eye").changed() {
-            if let Ok(mut orbit) = orbits.get_single_mut() {
-                let fov = match projections.get_single() {
-                    Ok(Projection::Perspective(p)) => p.fov,
-                    _ => std::f32::consts::FRAC_PI_4,
+    egui::SidePanel::left("tree_panel")
+        .resizable(true)
+        .default_width(280.0)
+        .show(contexts.ctx_mut(), |ui| {
+            ui.horizontal(|ui| {
+                let mode_label = match state.mode {
+                    layout::LayoutMode::MapV => "MapV",
+                    layout::LayoutMode::TreeV => "TreeV",
                 };
-                let width = match state.mode {
-                    layout::LayoutMode::MapV => layout::View::default().target_width as f32,
-                    layout::LayoutMode::TreeV => 36.0,
-                };
-                toggle_birdseye(&mut orbit, width, fov);
-            }
-        }
-
-        ui.separator();
-        match readout {
-            Some(info) => {
-                ui.label(egui::RichText::new(info.name).strong());
-                ui.label(info.kind);
-                ui.label(format!("Size  {}", info.size));
-                if let Some(tree) = info.tree {
-                    ui.label(format!("Tree  {tree}"));
+                if ui.button(mode_label).clicked() {
+                    state.mode = match state.mode {
+                        layout::LayoutMode::MapV => layout::LayoutMode::TreeV,
+                        layout::LayoutMode::TreeV => layout::LayoutMode::MapV,
+                    };
+                    state.frame_pending = true;
+                    changed = true;
                 }
-                ui.label(egui::RichText::new(info.path).small());
-            }
-            None => {
-                ui.label("Point at a block");
-            }
-        }
-
-        ui.separator();
-        ui.label(egui::RichText::new(list_name).strong());
-        if !count.is_empty() {
-            ui.label(count);
-        }
-        egui::ScrollArea::vertical()
-            .id_salt("file_list")
-            .max_height(320.0)
-            .show(ui, |ui| {
-                for row in &rows {
-                    let text = format!("{:<5} {}   {}", row.kind, row.name, row.size);
-                    let on = state.selected.as_ref() == Some(&row.path);
-                    if ui.selectable_label(on, text).clicked() {
-                        state.selected = Some(row.path.clone());
-                        if row.is_dir && toggle_expanded(&mut state.root, &row.path) {
-                            changed = true;
-                        }
+                if ui.button(if state.color_age { "Age" } else { "Type" }).clicked() {
+                    state.color_age = !state.color_age;
+                    changed = true;
+                }
+                if ui.toggle_value(&mut bird_on, "Bird's eye").changed() {
+                    if let Ok(mut orbit) = orbits.get_single_mut() {
+                        let fov = match projections.get_single() {
+                            Ok(Projection::Perspective(p)) => p.fov,
+                            _ => std::f32::consts::FRAC_PI_4,
+                        };
+                        let width = match state.mode {
+                            layout::LayoutMode::MapV => layout::View::default().target_width as f32,
+                            layout::LayoutMode::TreeV => 36.0,
+                        };
+                        toggle_birdseye(&mut orbit, width, fov);
                     }
                 }
             });
 
-        ui.separator();
-        egui::CollapsingHeader::new("Directory tree")
-            .default_open(false)
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("dir_tree")
-                    .max_height(240.0)
-                    .show(ui, |ui| {
-                        changed |= show_node(ui, &mut state.root, 0);
-                    });
-            });
-    });
+            let split = (ui.available_height() * 0.5).max(80.0);
+            ui.label(egui::RichText::new("Directory tree").small());
+            egui::ScrollArea::vertical()
+                .id_salt("dir_tree")
+                .max_height(split)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    show_dirs(ui, &mut state.root, selected_now.as_deref(), 0, &mut select, &mut toggle);
+                });
+
+            ui.separator();
+            ui.label(egui::RichText::new(format!("{list_name}  {count}")).small());
+            egui::ScrollArea::vertical()
+                .id_salt("file_list")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    for row in &rows {
+                        let text = format!("{:<4}  {:<8}  {}", row.kind, row.size, row.name);
+                        let on = state.selected.as_ref() == Some(&row.path);
+                        if ui.selectable_label(on, text).clicked() {
+                            select = Some(row.path.clone());
+                        }
+                    }
+                });
+        });
+
+    if let Some(path) = toggle {
+        let was_open = is_expanded_dir(&state.root, &path);
+        if !was_open {
+            queue_fly(&mut state, &pickables, path.clone());
+        }
+        toggle_expanded(&mut state.root, &path);
+        state.selected = Some(path);
+        state.dirty = true;
+    } else if let Some(path) = select {
+        queue_fly(&mut state, &pickables, path.clone());
+        let open = is_expanded_dir(&state.root, &path);
+        if !open {
+            toggle_expanded(&mut state.root, &path);
+        }
+        state.selected = Some(path);
+        state.dirty = true;
+    }
     if changed {
         state.dirty = true;
     }
 }
 
-fn show_node(ui: &mut egui::Ui, node: &mut node::Node, depth: usize) -> bool {
-    let indent = "  ".repeat(depth);
-    let marker = if node.is_dir() {
-        if node.expanded { "[-]" } else { "[+]" }
-    } else {
-        "   "
-    };
+fn queue_fly(state: &mut AppState, pickables: &Query<(&Pickable, &Transform)>, path: PathBuf) {
+    let from_path = state.selected.clone().unwrap_or_else(|| state.root.path.clone());
+    let (from_pos, from_span) = live_place(pickables, &from_path);
+    state.fly_from = Some(from_path);
+    state.fly_from_pos = from_pos;
+    state.fly_from_span = from_span;
+    state.fly_to = Some(path);
+}
 
-    let size_str = human_size(node.subtree_size);
-    let label = format!("{}{} {}  ({})", indent, marker, node.name, size_str);
-
-    let mut changed = false;
-    if ui.button(label).clicked() && node.is_dir() {
-        node.expanded = !node.expanded;
-        changed = true;
+fn show_dirs(
+    ui: &mut egui::Ui,
+    node: &mut node::Node,
+    selected: Option<&Path>,
+    depth: usize,
+    select: &mut Option<PathBuf>,
+    toggle: &mut Option<PathBuf>,
+) {
+    if !node.is_dir() {
+        return;
     }
-
+    ui.horizontal(|ui| {
+        ui.add_space(depth as f32 * 14.0);
+        let has_sub = node.children.iter().any(|child| child.is_dir());
+        let marker = if !has_sub {
+            " "
+        } else if node.expanded {
+            "−"
+        } else {
+            "+"
+        };
+        if ui.small_button(marker).clicked() && has_sub {
+            *toggle = Some(node.path.clone());
+        }
+        let on = selected == Some(node.path.as_path());
+        if ui.selectable_label(on, &node.name).clicked() {
+            *select = Some(node.path.clone());
+        }
+    });
     if node.expanded {
         for child in &mut node.children {
-            changed |= show_node(ui, child, depth + 1);
+            show_dirs(ui, child, selected, depth + 1, select, toggle);
         }
     }
-    changed
 }
 
 fn human_size(bytes: u64) -> String {
