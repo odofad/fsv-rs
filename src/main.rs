@@ -722,6 +722,7 @@ fn spawn_arc(
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: color,
             unlit: true,
+            cull_mode: None,
             perceptual_roughness: 0.7,
             ..default()
         })),
@@ -745,9 +746,9 @@ fn spawn_arc(
         let span = (arc.theta1 - arc.theta0).abs().max(0.05);
         let max_d = 0.28;
         let (text_w, text_d) = fit_label(arc.r0 * span * 0.8, max_d, shown.chars().count());
-        // The wire is 48 units tall and the platform is 158.2. Sit the
-        // name on top of the wire, inside this folder's own wedge.
-        let wire_top = arc.y + arc.height * (48.0 / 158.2);
+        // The wire is 48 units tall. The platform is thicker than the
+        // original 158 so it still reads as a floor from underneath.
+        let wire_top = arc.y + arc.height * (48.0 / 640.0);
         let r = (arc.r0 - text_d * 0.55).max(0.2);
         let pos = Vec3::new(r * mid.cos(), wire_top + 0.03, r * mid.sin());
         spawn_flat_label(

@@ -704,7 +704,7 @@ fn tv_emit(
     span: (u64, u64),
 ) {
     const BRANCH: f64 = 256.0;
-    const PLATFORM_H: f64 = 158.2;
+    const PLATFORM_H: f64 = 640.0;
     const PI: f64 = std::f64::consts::PI;
 
     let (depth, arc) = tv_fit(node.children.len().max(1), r0);
