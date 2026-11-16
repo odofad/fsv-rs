@@ -142,12 +142,12 @@ fn main() {
                 })
                 .add_systems(Startup, setup)
                 .add_systems(Update, (
-                    orbit_camera,
-                    hover_pick,
-                    click_expand.before(rebuild_layout),
-                    face_labels,
                     side_panel,
-                    step_deploy.after(click_expand).after(side_panel).before(rebuild_layout),
+                    face_labels.after(side_panel),
+                    orbit_camera.after(side_panel),
+                    hover_pick.after(side_panel),
+                    click_expand.after(side_panel).before(rebuild_layout),
+                    step_deploy.after(click_expand).before(rebuild_layout),
                     rebuild_layout,
                     apply_frame,
                     fly_to_opened.after(rebuild_layout),
@@ -243,7 +243,7 @@ fn orbit_camera(
 ) {
     let Ok((mut transform, mut orbit)) = cameras.get_single_mut() else { return; };
 
-    let over_ui = egui.ctx_mut().is_pointer_over_area();
+    let over_ui = pointer_over_ui(egui.ctx_mut());
 
     let mut delta = Vec2::ZERO;
     for ev in motion.read() {
@@ -1027,7 +1027,7 @@ fn click_expand(
     mut state: ResMut<AppState>,
     mut egui: EguiContexts,
 ) {
-    if egui.ctx_mut().is_pointer_over_area() {
+    if pointer_over_ui(egui.ctx_mut()) {
         return;
     }
 
@@ -1376,7 +1376,7 @@ fn hover_pick(
     mut state: ResMut<AppState>,
     mut egui: EguiContexts,
 ) {
-    if egui.ctx_mut().is_pointer_over_area() {
+    if pointer_over_ui(egui.ctx_mut()) {
         return;
     }
     let Ok(window) = windows.get_single() else { return; };
@@ -1455,6 +1455,12 @@ fn file_rows(dir: &node::Node) -> Vec<FileRow> {
         })
         .collect();
     rows
+}
+
+/// True once the side panel has been drawn this frame and the pointer is on it.
+/// Checked after `side_panel`, because egui only knows the panel after that.
+fn pointer_over_ui(ctx: &egui::Context) -> bool {
+    ctx.is_pointer_over_area() || ctx.wants_pointer_input()
 }
 
 fn node_count(n: usize) -> String {
