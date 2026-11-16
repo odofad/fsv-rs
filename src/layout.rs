@@ -464,7 +464,6 @@ pub fn cursor_bar() -> f32 {
 pub fn treev_layout(root: &Node, span: (u64, u64)) -> LayoutResult {
     // geometry.c treev_init / treev_arrange / treev_build_dir.
     const SPACING_D: f64 = 2048.0;
-    const BRANCH: f64 = 256.0;
     const MIN_CORE: f64 = 8192.0;
     const GROW: f64 = 1.25;
     const MIN_ARC: f64 = 90.0;
@@ -495,33 +494,12 @@ pub fn treev_layout(root: &Node, span: (u64, u64)) -> LayoutResult {
             core + SPACING_D,
             90.0,
             0.0,
+            false,
             &mut boxes,
             &mut arcs,
             &mut max_r,
             span,
         );
-        arcs.push(raw_arc(
-            core - 0.5 * BRANCH,
-            core + 0.5 * BRANCH,
-            0.0,
-            360.0,
-            0.0,
-            48.0,
-            root,
-            true,
-            false,
-        ));
-        arcs.push(raw_arc(
-            core,
-            core + SPACING_D,
-            90.0 - tv_half_deg(BRANCH, core + 0.5 * SPACING_D),
-            90.0 + tv_half_deg(BRANCH, core + 0.5 * SPACING_D),
-            0.0,
-            48.0,
-            root,
-            true,
-            false,
-        ));
     } else {
         tv_leaf(
             root,
@@ -715,6 +693,7 @@ fn tv_emit(
     r0: f64,
     abs_deg: f64,
     z0: f64,
+    incoming: bool,
     boxes: &mut Vec<BoxGeom>,
     arcs: &mut Vec<ArcGeom>,
     max_r: &mut f64,
@@ -739,20 +718,23 @@ fn tv_emit(
     ));
     *max_r = max_r.max(r0 + depth);
 
-    // Incoming stem. Width is 256 in cartesian units, halfway back across the gap.
-    let stem_r = r0 - 0.5 * SPACING_D;
-    let stem_half = tv_half_deg(BRANCH, (stem_r + r0) * 0.5);
-    arcs.push(raw_arc(
-        stem_r,
-        r0,
-        abs_deg - stem_half,
-        abs_deg + stem_half,
-        z0,
-        48.0,
-        node,
-        true,
-        false,
-    ));
+    // Incoming stem. The root has no parent, so it does not grow a line
+    // back to the empty core ring.
+    if incoming {
+        let stem_r = r0 - 0.5 * SPACING_D;
+        let stem_half = tv_half_deg(BRANCH, (stem_r + r0) * 0.5);
+        arcs.push(raw_arc(
+            stem_r,
+            r0,
+            abs_deg - stem_half,
+            abs_deg + stem_half,
+            z0,
+            48.0,
+            node,
+            true,
+            false,
+        ));
+    }
 
     // Every child takes a slot, including an open directory. An open
     // directory is not a block: it is the next platform. A closed
@@ -825,6 +807,7 @@ fn tv_emit(
             child_r,
             abs_deg + rel,
             z0,
+            true,
             boxes,
             arcs,
             max_r,

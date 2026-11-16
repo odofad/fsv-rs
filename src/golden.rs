@@ -339,3 +339,49 @@ fn current_layout_against_golden() {
         "{mismatches} MapV fields differ from the original row layout\n{report}"
     );
 }
+
+#[test]
+fn treev_root_is_a_platform_not_a_ring() {
+    let mut kids = Vec::new();
+    for i in 0..8 {
+        kids.push(dir(
+            &format!("dir{i}"),
+            false,
+            vec![file("a", 2000), file("b", 800)],
+        ));
+    }
+    for i in 0..24 {
+        kids.push(file(&format!("file{i}"), 1000 + i * 500));
+    }
+    let mut home = dir("home", true, kids);
+    let drawn = layout::layout(&mut home, LayoutMode::TreeV);
+    for arc in &drawn.arcs {
+        let span = (arc.theta1 - arc.theta0).abs();
+        assert!(
+            span < 4.0,
+            "{} spans {:.1} rad, that is the empty core ring",
+            arc.name, span
+        );
+    }
+    let platform = drawn.arcs.iter().find(|a| !a.branch).expect("root platform");
+    let r = (platform.r0 + platform.r1) * 0.5;
+    let theta = (platform.theta0 + platform.theta1) * 0.5;
+    let px = r * theta.cos();
+    let pz = r * theta.sin();
+    let from_origin = (px * px + pz * pz).sqrt();
+    eprintln!(
+        "platform r={r:.2} arc_deg={:.1} focus=({:.2},{:.2},{:.2}) span={:.2} origin={from_origin:.2} boxes={}",
+        (platform.theta1 - platform.theta0).to_degrees(),
+        drawn.focus[0],
+        drawn.focus[1],
+        drawn.focus[2],
+        drawn.span,
+        drawn.boxes.len()
+    );
+    assert!(drawn.boxes.len() > 20);
+    assert!(
+        drawn.span < from_origin,
+        "camera span {0:.2} still covers the disk (platform is {from_origin:.2} from the origin)",
+        drawn.span
+    );
+}

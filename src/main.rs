@@ -133,34 +133,46 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_xyz(8.0, 26.0, 18.0).looking_at(Vec3::ZERO, Vec3::Y),
-        OrbitCamera {
-            yaw: 0.5,
-            pitch: -0.85,
-            distance: 32.0,
-            focus: Vec3::ZERO,
-            fly: None,
-            birdseye: false,
-            saved: None,
-        },
-    ));
-
-    commands.spawn((DirectionalLight {
-        illuminance: 22_000.0,
-        shadows_enabled: false,
-        ..default()
-    }, Transform::from_xyz(8.0, 24.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y)));
-
     commands.insert_resource(AmbientLight {
         color: Color::WHITE,
         brightness: 400.0,
         ..default()
     });
 
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 22_000.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_xyz(8.0, 24.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+
     spawn_geometry(&mut commands, &mut state, &mut meshes, &mut materials);
     state.dirty = false;
+
+    let tree = matches!(state.mode, layout::LayoutMode::TreeV);
+    let dist = if tree {
+        (state.frame * 1.35).clamp(2.5, 24.0)
+    } else {
+        32.0
+    };
+    let focus = if tree { state.focus } else { Vec3::ZERO };
+    let pitch = if tree { -1.15 } else { -0.85 };
+    commands.spawn((
+        Camera3d::default(),
+        Transform::from_xyz(focus.x, focus.y + dist * 0.9, focus.z + dist * 0.4)
+            .looking_at(focus, Vec3::Y),
+        OrbitCamera {
+            yaw: 0.0,
+            pitch,
+            distance: dist,
+            focus,
+            fly: None,
+            birdseye: false,
+            saved: None,
+        },
+    ));
 }
 
 fn apply_frame(mut state: ResMut<AppState>, mut orbits: Query<&mut OrbitCamera>) {
@@ -173,7 +185,7 @@ fn apply_frame(mut state: ResMut<AppState>, mut orbits: Query<&mut OrbitCamera>)
     }
     let Ok(mut orbit) = orbits.get_single_mut() else { return; };
     // camera.c frames TreeV with the tallest leaf, not just the footprint.
-    let dist = (state.frame * 1.6).clamp(4.0, 80.0);
+    let dist = (state.frame * 1.35).clamp(2.5, 24.0);
     orbit.focus = state.focus;
     orbit.distance = dist;
     // Initial TreeV pitch is overhead. A shallow pitch turns the platform
