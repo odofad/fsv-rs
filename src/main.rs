@@ -429,11 +429,28 @@ fn spawn_geometry(
             }
         }
 
-        if geom.label && !geom.name.is_empty() {
-            spawn_label(commands, &geom, translation, scale);
+        if geom.x_mark {
+            let y = translation.y + scale.y * 0.5 + 0.012;
+            let yaw_q = Quat::from_rotation_y(geom.yaw);
+            let thick = (scale.x.min(scale.z) * 0.045).clamp(0.006, 0.035);
+            let h = 0.40;
+            let corner = |sx: f32, sz: f32| {
+                let local = yaw_q * Vec3::new(sx * scale.x, 0.0, sz * scale.z);
+                Vec3::new(translation.x + local.x, y, translation.z + local.z)
+            };
+            spawn_segment(commands, cube.clone(), folder_mat.clone(), corner(-h, -h), corner(h, h), thick);
+            spawn_segment(commands, cube.clone(), folder_mat.clone(), corner(h, -h), corner(-h, h), thick);
         }
 
-        if state.selected.as_ref() == Some(&geom.path) {
+        if geom.label && !geom.name.is_empty() {
+            if matches!(state.mode, layout::LayoutMode::TreeV) {
+                spawn_label(commands, &geom, translation, scale);
+            } else {
+                spawn_screen_label(commands, &geom, translation, scale);
+            }
+        }
+
+        if state.selected.as_ref() == Some(&geom.path) && !geom.x_mark {
             spawn_cursor(commands, cube.clone(), cursor_mat.clone(), translation, scale, geom.yaw);
         }
     }
@@ -444,8 +461,16 @@ fn spawn_geometry(
         spawn_segment(commands, cube.clone(), line_mat.clone(), from, to, 0.02);
     }
 
+    let root_path = state.root.path.clone();
     for arc in result.arcs {
+        let current = match &state.selected {
+            Some(path) => arc.path == *path,
+            None => arc.path == root_path,
+        };
         spawn_arc(commands, meshes, materials, &arc);
+        if current && !arc.branch {
+            spawn_arc_cursor(commands, cube.clone(), cursor_mat.clone(), &arc);
+        }
     }
 
     state.frame = if matches!(state.mode, layout::LayoutMode::TreeV) {
@@ -536,8 +561,7 @@ struct FaceLabel {
     axis_v: Vec3,
 }
 
-fn spawn_label(commands: &mut Commands, geom: &layout::BoxGeom, translation: Vec3, scale: Vec3) {
-    // mapv_apply_label: 0.8125 of the top width, (2 - phi) of the depth, black.
+fn spawn_screen_label(commands: &mut Commands, geom: &layout::BoxGeom, translation: Vec3, scale: Vec3) {
     let shown: String = geom.name.chars().take(48).collect();
     let top_w = scale.x * (1.0 - 2.0 * geom.slant_x) * 0.8125;
     let top_d = scale.z * (1.0 - 2.0 * geom.slant_y) * 0.382;
@@ -556,6 +580,57 @@ fn spawn_label(commands: &mut Commands, geom: &layout::BoxGeom, translation: Vec
     ));
 }
 
+fn spawn_label(commands: &mut Commands, geom: &layout::BoxGeom, translation: Vec3, scale: Vec3) {
+    // treev_apply_label / mapv_apply_label: black, on the top face.
+    // Width is most of the block. Depth is (2 - phi) of the block.
+    let shown: String = geom.name.chars().take(48).collect();
+    let top_w = scale.x * (1.0 - 2.0 * geom.slant_x) * 0.875;
+    let top_d = scale.z * (1.0 - 2.0 * geom.slant_y) * 0.382;
+    if shown.is_empty() {
+        return;
+    }
+    let center = Vec3::new(translation.x, translation.y + scale.y * 0.5 + 0.012, translation.z);
+    spawn_flat_label(commands, &shown, center, geom.yaw, top_w, top_d, Color::srgb(0.02, 0.02, 0.03));
+}
+
+/// Text lying on the ground, readable from outside the ring.
+/// Text2d sits in its local XY plane. Tip it onto XZ, then yaw it.
+fn spawn_flat_label(
+    commands: &mut Commands,
+    text: &str,
+    center: Vec3,
+    yaw: f32,
+    width: f32,
+    depth: f32,
+    color: Color,
+) {
+    if text.is_empty() || width < 0.04 || depth < 0.02 {
+        return;
+    }
+    let font_size = 64.0;
+    let px_w = (text.chars().count().max(1) as f32) * font_size * 0.55;
+    let sx = width / px_w;
+    let sy = depth / font_size;
+    // 180 around Z flips the word so it reads from the outer side.
+    let rotation = Quat::from_rotation_y(-yaw - PI * 0.5)
+        * Quat::from_rotation_z(PI)
+        * Quat::from_rotation_x(-PI * 0.5);
+    commands.spawn((
+        Text2d::new(text.to_string()),
+        TextFont {
+            font_size,
+            ..default()
+        },
+        TextColor(color),
+        Transform {
+            translation: center,
+            rotation,
+            scale: Vec3::new(sx, sy, 1.0),
+        },
+        MapPiece,
+    ));
+}
+
 fn spawn_arc(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
@@ -564,7 +639,8 @@ fn spawn_arc(
 ) {
     let (mesh, translation, scale) = arc_mesh(arc);
     let color = if arc.branch {
-        Color::srgb(0.9, 0.22, 0.16)
+        // geometry.c branch_color. Dark red, not the salmon of a new file.
+        Color::srgb(0.5, 0.0, 0.0)
     } else {
         Color::srgb(0.22, 0.42, 0.72)
     };
@@ -588,22 +664,16 @@ fn spawn_arc(
         });
     }
     if arc.label && !arc.name.is_empty() {
+        // treev_apply_label, platform case: white, just inside the inner
+        // edge, lying on the wire in front of the platform.
         let mid = (arc.theta0 + arc.theta1) * 0.5;
-        let r = arc.r0 + (arc.r1 - arc.r0) * 0.18;
-        let pos = Vec3::new(r * mid.cos(), translation.y + scale.y * 0.5 + 0.04, r * mid.sin());
-        let tangent = Vec3::new(-mid.sin(), 0.0, mid.cos());
-        let radial = Vec3::new(mid.cos(), 0.0, mid.sin());
-        let span = (arc.theta1 - arc.theta0).abs().max(0.05);
-        let shown: String = arc.name.chars().take(48).collect();
-        commands.spawn((
-            FaceLabel {
-                name: shown,
-                center: pos,
-                axis_u: tangent * (r * span * 0.55),
-                axis_v: radial * ((arc.r1 - arc.r0).abs() * 0.22).max(0.15),
-            },
-            MapPiece,
-        ));
+        let depth = (arc.r1 - arc.r0).abs().max(0.3);
+        let text_d = (depth * 0.42).clamp(0.35, 1.8);
+        let r = (arc.r0 - text_d * 0.55).max(0.2);
+        let text_w = (r * (arc.theta1 - arc.theta0).abs() * 0.85).max(text_d * 2.2);
+        let pos = Vec3::new(r * mid.cos(), arc.y + 0.03, r * mid.sin());
+        let shown: String = arc.name.chars().take(32).collect();
+        spawn_flat_label(commands, &shown, pos, mid, text_w, text_d, Color::WHITE);
     }
 }
 
@@ -712,6 +782,33 @@ fn arc_mesh(arc: &layout::ArcGeom) -> (Mesh, Vec3, Vec3) {
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_indices(Indices::U32(indices));
     (mesh, center, size)
+}
+
+fn spawn_arc_cursor(
+    commands: &mut Commands,
+    cube: Handle<Mesh>,
+    mat: Handle<StandardMaterial>,
+    arc: &layout::ArcGeom,
+) {
+    let bar = layout::cursor_bar();
+    let dr = (arc.r1 - arc.r0).abs() * bar;
+    let dth = (arc.theta1 - arc.theta0).abs() * bar;
+    let dy = arc.height.max(0.01) * bar;
+    let thick = ((arc.r1 - arc.r0).abs() * 0.015).clamp(0.012, 0.05);
+    for (r, sgn_r) in [(arc.r0, 1.0_f32), (arc.r1, -1.0)] {
+        for (th, sgn_th) in [(arc.theta0, 1.0_f32), (arc.theta1, -1.0)] {
+            for (y, sgn_y) in [(arc.y, 1.0_f32), (arc.y + arc.height, -1.0)] {
+                let (s, c) = th.sin_cos();
+                let p = Vec3::new(r * c, y, r * s);
+                let radial = Vec3::new(c, 0.0, s) * (dr * sgn_r);
+                let (s2, c2) = (th + dth * sgn_th).sin_cos();
+                let tangent = Vec3::new(r * c2, y, r * s2);
+                spawn_segment(commands, cube.clone(), mat.clone(), p, p + radial, thick);
+                spawn_segment(commands, cube.clone(), mat.clone(), p, tangent, thick);
+                spawn_segment(commands, cube.clone(), mat.clone(), p, p + Vec3::new(0.0, dy * sgn_y, 0.0), thick);
+            }
+        }
+    }
 }
 
 fn spawn_cursor(

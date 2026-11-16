@@ -333,6 +333,10 @@ fn current_layout_against_golden() {
         mismatches += 1;
         report.push_str("docs has no incoming wire\n");
     }
+    if !drawn.boxes.iter().any(|b| b.name == "docs" && b.x_mark) {
+        mismatches += 1;
+        report.push_str("opened docs left no X on the parent\n");
+    }
 
     assert!(
         mismatches == 0,

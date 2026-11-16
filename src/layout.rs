@@ -52,6 +52,8 @@ pub struct BoxGeom {
     pub folder: bool,
     /// Name laid on the top face.
     pub label: bool,
+    /// Flat X. An opened directory leaves this on its parent.
+    pub x_mark: bool,
     /// Yaw around the up axis, radians. MapV leaves this at 0.
     pub yaw: f32,
     /// File age, 0 oldest to 1 newest. Directories stay None: color.c
@@ -424,6 +426,7 @@ fn push_box(
         slant_y,
         folder: collapsed_dir && !is_base,
         label: !is_base && !node.name.is_empty() && (collapsed_dir || !node.is_dir()),
+        x_mark: false,
         yaw: 0.0,
         age: file_age(node, span.0, span.1),
     });
@@ -508,6 +511,7 @@ pub fn treev_layout(root: &Node, span: (u64, u64)) -> LayoutResult {
             90.0,
             0.0,
             true,
+            false,
             &mut boxes,
             &mut max_r,
             span,
@@ -757,19 +761,19 @@ fn tv_emit(
             idx -= 1;
             let child = kids[idx];
             let open_dir = child.is_dir() && child.expanded;
-            if !open_dir {
-                tv_leaf(
-                    child,
-                    r0,
-                    pos_r - r0,
-                    abs_deg + theta,
-                    z0 + PLATFORM_H,
-                    true,
-                    boxes,
-                    max_r,
-                    span,
-                );
-            }
+            // An open directory keeps a flat X in its old slot.
+            tv_leaf(
+                child,
+                r0,
+                pos_r - r0,
+                abs_deg + theta,
+                z0 + PLATFORM_H,
+                !open_dir,
+                open_dir,
+                boxes,
+                max_r,
+                span,
+            );
             theta -= inter;
         }
         remaining = remaining.saturating_sub(row_n);
@@ -878,6 +882,7 @@ fn tv_leaf(
     abs_deg: f64,
     z0: f64,
     full: bool,
+    x_mark: bool,
     boxes: &mut Vec<BoxGeom>,
     max_r: &mut f64,
     span: (u64, u64),
@@ -904,8 +909,9 @@ fn tv_leaf(
         floor: false,
         slant_x: 0.0,
         slant_y: 0.0,
-        folder: collapsed_dir,
-        label: full && !node.name.is_empty(),
+        folder: collapsed_dir && !x_mark,
+        label: full && !x_mark && !node.name.is_empty(),
+        x_mark,
         yaw: theta as f32,
         age: file_age(node, span.0, span.1),
     });
