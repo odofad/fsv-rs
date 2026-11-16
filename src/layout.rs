@@ -56,6 +56,11 @@ pub struct BoxGeom {
     pub x_mark: bool,
     /// Yaw around the up axis, radians. MapV leaves this at 0.
     pub yaw: f32,
+    /// Uniform scale about `anchor` while a directory is opening or closing.
+    /// 1 means the block is already where it belongs.
+    pub grow: f32,
+    /// World point the grow is around: x, up, ground-z.
+    pub anchor: [f32; 3],
     /// File age, 0 oldest to 1 newest. Directories stay None: color.c
     /// keeps their type color even in timestamp mode.
     pub age: Option<f32>,
@@ -86,6 +91,8 @@ pub struct ArcGeom {
     pub name: String,
     pub branch: bool,
     pub label: bool,
+    pub grow: f32,
+    pub anchor: [f32; 3],
 }
 
 pub struct LayoutResult {
@@ -428,6 +435,8 @@ fn push_box(
         label: !is_base && !node.name.is_empty() && (collapsed_dir || !node.is_dir()),
         x_mark: false,
         yaw: 0.0,
+        grow: 1.0,
+        anchor: [0.0, 0.0, 0.0],
         age: file_age(node, span.0, span.1),
     });
 }
@@ -502,6 +511,7 @@ pub fn treev_layout(root: &Node, span: (u64, u64)) -> LayoutResult {
             &mut arcs,
             &mut max_r,
             span,
+            None,
         );
     } else {
         tv_leaf(
@@ -512,9 +522,11 @@ pub fn treev_layout(root: &Node, span: (u64, u64)) -> LayoutResult {
             0.0,
             true,
             false,
+            1.0,
             &mut boxes,
             &mut max_r,
             span,
+            None,
         );
     }
 
@@ -592,6 +604,8 @@ fn raw_arc(
         name: node.name.clone(),
         branch,
         label,
+        grow: 1.0,
+        anchor: [0.0, 0.0, 0.0],
     }
 }
 
@@ -607,7 +621,7 @@ fn tv_measure(node: &Node, r0: f64) -> (f64, f64, f64) {
     for child in &node.children {
         if child.is_dir() && child.expanded {
             let (ca, _, cs) = tv_measure(child, child_r);
-            sub += ca.max(cs);
+            sub += ca.max(cs) * child.deployment as f64;
         }
     }
     (arc, depth, sub)
@@ -702,6 +716,7 @@ fn tv_emit(
     arcs: &mut Vec<ArcGeom>,
     max_r: &mut f64,
     span: (u64, u64),
+    grow: Option<(f32, [f32; 3])>,
 ) {
     const BRANCH: f64 = 256.0;
     const PLATFORM_H: f64 = 320.0;
@@ -720,6 +735,7 @@ fn tv_emit(
         false,
         true,
     ));
+    stamp_arc(arcs, grow);
     *max_r = max_r.max(r0 + depth);
 
     // Incoming stem. treev_gldraw_inbranch, including the root.
@@ -738,12 +754,14 @@ fn tv_emit(
             true,
             false,
         ));
+        stamp_arc(arcs, grow);
     }
 
     // Every child takes a slot, including an open directory. An open
     // directory is not a block: it is the next platform. A closed
     // directory is a block. Files are blocks.
     let kids: Vec<&Node> = node.children.iter().collect();
+    let mut leaf_at: Vec<(std::path::PathBuf, [f32; 3])> = Vec::new();
     let mut remaining = kids.len();
     let mut pos_r = r0 + LEAF;
     let mut idx = kids.len();
@@ -761,19 +779,47 @@ fn tv_emit(
             idx -= 1;
             let child = kids[idx];
             let open_dir = child.is_dir() && child.expanded;
-            // An open directory keeps a flat X in its old slot.
-            tv_leaf(
-                child,
-                r0,
-                pos_r - r0,
-                abs_deg + theta,
-                z0 + PLATFORM_H,
-                !open_dir,
-                open_dir,
-                boxes,
-                max_r,
-                span,
-            );
+            let partial = open_dir && (child.deployment as f64) < 0.98;
+            if partial {
+                tv_leaf(
+                    child,
+                    r0,
+                    pos_r - r0,
+                    abs_deg + theta,
+                    z0 + PLATFORM_H,
+                    true,
+                    false,
+                    (1.0 - child.deployment as f64).clamp(0.05, 1.0),
+                    boxes,
+                    max_r,
+                    span,
+                    None,
+                );
+            } else {
+                tv_leaf(
+                    child,
+                    r0,
+                    pos_r - r0,
+                    abs_deg + theta,
+                    z0 + PLATFORM_H,
+                    !open_dir,
+                    open_dir,
+                    1.0,
+                    boxes,
+                    max_r,
+                    span,
+                    grow,
+                );
+            }
+            let t = (abs_deg + theta).to_radians();
+            leaf_at.push((
+                child.path.clone(),
+                [
+                    (pos_r * t.cos()) as f32,
+                    (z0 + PLATFORM_H) as f32,
+                    (pos_r * t.sin()) as f32,
+                ],
+            ));
             theta -= inter;
         }
         remaining = remaining.saturating_sub(row_n);
@@ -793,7 +839,7 @@ fn tv_emit(
             .filter(|c| c.is_dir() && c.expanded)
             .map(|c| {
                 let (ca, _, cs) = tv_measure(c, child_r);
-                ca.max(cs)
+                ca.max(cs) * c.deployment as f64
             })
             .sum::<f64>();
     for child in &node.children {
@@ -801,11 +847,19 @@ fn tv_emit(
             continue;
         }
         let (ca, _, cs) = tv_measure(child, child_r);
-        let w = ca.max(cs);
+        let w = ca.max(cs) * (child.deployment as f64);
         let rel = cursor + 0.5 * w;
         cursor += w;
         first = Some(first.unwrap_or(rel));
         last = Some(rel);
+        let child_grow = if (child.deployment as f64) < 0.98 {
+            leaf_at
+                .iter()
+                .find(|(path, _)| path == &child.path)
+                .map(|(_, anchor)| (child.deployment, *anchor))
+        } else {
+            grow
+        };
         tv_emit(
             child,
             child_r,
@@ -816,6 +870,7 @@ fn tv_emit(
             arcs,
             max_r,
             span,
+            child_grow,
         );
     }
     if let (Some(a), Some(b)) = (first, last) {
@@ -833,6 +888,7 @@ fn tv_emit(
             true,
             false,
         ));
+        stamp_arc(arcs, grow);
         let pad = tv_half_deg(BRANCH, mid_r - 0.5 * BRANCH);
         // theta0 = min(0, first), theta1 = max(0, last). The arc always
         // includes the parent center line.
@@ -850,6 +906,7 @@ fn tv_emit(
                 true,
                 false,
             ));
+            stamp_arc(arcs, grow);
         }
     }
 }
@@ -860,6 +917,13 @@ const EDGE05: f64 = 0.5 * LEAF;
 const PITCH: f64 = 1.5 * LEAF;
 const SPACING_W: f64 = 512.0;
 const SPACING_D: f64 = 2048.0;
+
+fn stamp_arc(arcs: &mut Vec<ArcGeom>, grow: Option<(f32, [f32; 3])>) {
+    let Some((s, anchor)) = grow else { return };
+    let Some(arc) = arcs.last_mut() else { return };
+    arc.grow = s;
+    arc.anchor = anchor;
+}
 
 fn tv_leaf_height(node: &Node) -> f64 {
     // geometry.c uses sqrt(bytes). On a 1999 disk that stayed near the
@@ -884,15 +948,17 @@ fn tv_leaf(
     z0: f64,
     full: bool,
     x_mark: bool,
+    height_mul: f64,
     boxes: &mut Vec<BoxGeom>,
     max_r: &mut f64,
     span: (u64, u64),
+    grow: Option<(f32, [f32; 3])>,
 ) {
     const LEAF: f64 = 256.0;
     let edge = if full { LEAF } else { 0.875 * LEAF };
     // geometry.c: leaf.height = sqrt(bytes). The camera frames the tallest
     // one, which is what geometry_treev_max_leaf_height is for.
-    let height = if full { tv_leaf_height(node) } else { LEAF / 64.0 };
+    let height = (if full { tv_leaf_height(node) } else { LEAF / 64.0 }) * height_mul;
     let theta = abs_deg.to_radians();
     let r = r0 + dist;
     *max_r = max_r.max(r + 0.5 * edge);
@@ -914,6 +980,8 @@ fn tv_leaf(
         label: full && !x_mark && !node.name.is_empty(),
         x_mark,
         yaw: theta as f32,
+        grow: grow.map(|(s, _)| s).unwrap_or(1.0),
+        anchor: grow.map(|(_, a)| a).unwrap_or([0.0, 0.0, 0.0]),
         age: file_age(node, span.0, span.1),
     });
 }

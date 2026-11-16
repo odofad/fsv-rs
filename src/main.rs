@@ -51,6 +51,8 @@ struct AppState {
     fly_to_place: Option<(Vec3, Vec3)>,
     fly_from_area: f32,
     fly_to_area: f32,
+    /// Directories easing open or closed. TreeV only.
+    deploys: Vec<DeployAnim>,
     /// Rebuild the meshes. Not Bevy's change flag: writing geometry
     /// onto the tree must not schedule another rebuild by itself.
     dirty: bool,
@@ -135,6 +137,7 @@ fn main() {
                     fly_to_place: None,
                     fly_from_area: 0.0,
                     fly_to_area: 0.0,
+                    deploys: Vec::new(),
                     dirty: true,
                 })
                 .add_systems(Startup, setup)
@@ -144,6 +147,7 @@ fn main() {
                     click_expand.before(rebuild_layout),
                     face_labels,
                     side_panel,
+                    step_deploy.after(click_expand).after(side_panel).before(rebuild_layout),
                     rebuild_layout,
                     apply_frame,
                     fly_to_opened.after(rebuild_layout),
@@ -427,8 +431,9 @@ fn spawn_geometry(
         }
 
         let mesh = meshes.add(slanted_box(geom.slant_x, geom.slant_y));
-        let translation = Vec3::new(geom.x, geom.z, geom.y);
-        let scale = Vec3::new(geom.width.max(0.01), geom.height.max(0.01), geom.depth.max(0.01));
+        let mut translation = Vec3::new(geom.x, geom.z, geom.y);
+        let mut scale = Vec3::new(geom.width.max(0.01), geom.height.max(0.01), geom.depth.max(0.01));
+        grown(&mut translation, &mut scale, geom.grow, geom.anchor);
         if !geom.x_mark {
             note_place(state, &geom.path, translation, scale);
         }
@@ -740,7 +745,8 @@ fn spawn_arc(
     images: &mut ResMut<Assets<Image>>,
     arc: &layout::ArcGeom,
 ) {
-    let (mesh, translation, scale) = arc_mesh(arc);
+    let (mesh, mut translation, mut scale) = arc_mesh(arc);
+    grown(&mut translation, &mut scale, arc.grow, arc.anchor);
     let color = if arc.branch {
         // geometry.c branch_color. Dark red, not the salmon of a new file.
         Color::srgb(0.5, 0.0, 0.0)
@@ -768,7 +774,7 @@ fn spawn_arc(
             path: arc.path.clone(),
         });
     }
-    if arc.label && !arc.name.is_empty() {
+    if arc.label && !arc.name.is_empty() && arc.grow >= 0.98 {
         // treev_apply_label, platform case: curved along the inner edge.
         spawn_curved_label(commands, meshes, materials, images, arc);
     }
@@ -815,6 +821,16 @@ fn spawn_curved_label(
             [255, 255, 255, 255],
         );
     }
+}
+
+fn grown(translation: &mut Vec3, scale: &mut Vec3, grow: f32, anchor: [f32; 3]) {
+    if grow >= 0.999 {
+        return;
+    }
+    let s = grow.max(0.02);
+    let a = Vec3::new(anchor[0], anchor[1], anchor[2]);
+    *translation = a + (*translation - a) * s;
+    *scale *= s;
 }
 
 fn arc_mesh(arc: &layout::ArcGeom) -> (Mesh, Vec3, Vec3) {
@@ -1056,7 +1072,7 @@ fn click_expand(
     state.fly_to = Some(path.clone());
     state.dirty = true;
     if !open_dir {
-        toggle_expanded(&mut state.root, &path);
+        start_deploy(&mut state, &path, true);
     }
 }
 
@@ -1093,16 +1109,109 @@ fn ray_aabb(origin: Vec3, dir: Vec3, min: Vec3, max: Vec3) -> Option<f32> {
     }
 }
 
-fn toggle_expanded(node: &mut node::Node, path: &Path) -> bool {
+struct DeployAnim {
+    path: PathBuf,
+    from: f32,
+    to: f32,
+    elapsed: f32,
+}
+
+fn start_deploy(state: &mut AppState, path: &Path, open: bool) {
+    let to = if open { 1.0 } else { 0.0 };
+    if !matches!(state.mode, layout::LayoutMode::TreeV) {
+        set_expanded(&mut state.root, path, open);
+        set_deployment(&mut state.root, path, to);
+        state.dirty = true;
+        return;
+    }
+    let current = deployment_of(&state.root, path).unwrap_or(0.0);
+    if open {
+        set_expanded(&mut state.root, path, true);
+    }
+    state.deploys.retain(|d| d.path != path);
+    if (current - to).abs() < 0.02 {
+        set_deployment(&mut state.root, path, to);
+        set_expanded(&mut state.root, path, open);
+        state.dirty = true;
+        return;
+    }
+    state.deploys.push(DeployAnim {
+        path: path.to_path_buf(),
+        from: current,
+        to,
+        elapsed: 0.0,
+    });
+    state.dirty = true;
+}
+
+fn step_deploy(time: Res<Time>, mut state: ResMut<AppState>) {
+    if state.deploys.is_empty() {
+        return;
+    }
+    let dt = time.delta_secs();
+    let mut i = 0;
+    while i < state.deploys.len() {
+        state.deploys[i].elapsed += dt;
+        let elapsed = state.deploys[i].elapsed;
+        let from = state.deploys[i].from;
+        let to = state.deploys[i].to;
+        let path = state.deploys[i].path.clone();
+        let p = (elapsed / 0.5).clamp(0.0, 1.0);
+        // colexp.c: open is inverse quadratic, close is quadratic. Half a second.
+        let eased = if to >= from {
+            1.0 - (1.0 - p) * (1.0 - p)
+        } else {
+            p * p
+        };
+        let v = if p >= 1.0 { to } else { from + (to - from) * eased };
+        set_deployment(&mut state.root, &path, v);
+        if p >= 1.0 {
+            if to < 0.5 {
+                set_expanded(&mut state.root, &path, false);
+            }
+            state.deploys.remove(i);
+        } else {
+            i += 1;
+        }
+    }
+    state.dirty = true;
+}
+
+fn deployment_of(node: &node::Node, path: &Path) -> Option<f32> {
+    if node.path == path {
+        return Some(node.deployment);
+    }
+    for child in &node.children {
+        if let Some(v) = deployment_of(child, path) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+fn set_deployment(node: &mut node::Node, path: &Path, value: f32) -> bool {
+    if node.path == path {
+        node.deployment = value;
+        return true;
+    }
+    for child in &mut node.children {
+        if set_deployment(child, path, value) {
+            return true;
+        }
+    }
+    false
+}
+
+fn set_expanded(node: &mut node::Node, path: &Path, open: bool) -> bool {
     if node.path == path {
         if node.is_dir() {
-            node.expanded = !node.expanded;
+            node.expanded = open;
             return true;
         }
         return false;
     }
     for child in &mut node.children {
-        if toggle_expanded(child, path) {
+        if set_expanded(child, path, open) {
             return true;
         }
     }
@@ -1503,14 +1612,13 @@ fn side_panel(
         if !was_open {
             queue_fly(&mut state, &pickables, path.clone());
         }
-        toggle_expanded(&mut state.root, &path);
+        start_deploy(&mut state, &path, !was_open);
         state.selected = Some(path);
-        state.dirty = true;
     } else if let Some(path) = select {
         queue_fly(&mut state, &pickables, path.clone());
         let open = is_expanded_dir(&state.root, &path);
         if !open {
-            toggle_expanded(&mut state.root, &path);
+            start_deploy(&mut state, &path, true);
         }
         state.selected = Some(path);
         state.dirty = true;

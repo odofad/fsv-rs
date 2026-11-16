@@ -31,6 +31,8 @@ pub struct Node {
     pub kind: NodeType,
     pub children: Vec<Node>,
     pub expanded: bool,
+    /// 0 collapsed, 1 open. TreeV eases this; the layout reads it.
+    pub deployment: f32,
     pub map: Option<MapGeom>,
 }
 
@@ -45,6 +47,7 @@ impl Node {
             kind,
             children: Vec::new(),
             expanded: true,
+            deployment: 1.0,
             map: None,
         }
     }

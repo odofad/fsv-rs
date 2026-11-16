@@ -35,6 +35,7 @@ pub fn scan(root: &Path) -> Result<Node, std::io::Error> {
         node.mtime = mtime;
         // Collapsed by default; root will be expanded later
         node.expanded = false;
+        node.deployment = 0.0;
 
         nodes.insert(path, node);
     }
@@ -65,7 +66,8 @@ pub fn scan(root: &Path) -> Result<Node, std::io::Error> {
     }
 
     let mut root_node = build(root, &mut nodes, &children_map);
-    root_node.expanded = true; // root starts expanded
+    root_node.expanded = true;
+    root_node.deployment = 1.0;
 
     compute_subtree_size(&mut root_node);
     sort_children(&mut root_node);

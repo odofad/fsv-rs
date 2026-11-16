@@ -36,6 +36,7 @@ fn file(name: &str, size: u64) -> Node {
 fn dir(name: &str, expanded: bool, children: Vec<Node>) -> Node {
     let mut n = Node::new(name.into(), PathBuf::from(name), NodeType::Directory);
     n.expanded = expanded;
+    n.deployment = if expanded { 1.0 } else { 0.0 };
     n.children = children;
     let mut total = n.size;
     for child in &n.children {
